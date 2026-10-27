@@ -41,10 +41,10 @@ export function filterAssigneeKeys (keys, filter) {
   return out.length ? out : keys
 }
 // A populated custom field takes precedence over the legacy scoped label.
-export function getIssuePriorityValues (raw) {
+export function getCustomFieldValues (raw, name) {
   const values = []
   for (const field of raw?.custom_field_values || []) {
-    if (String(field?.custom_field?.name || '').trim().toLowerCase() !== 'priority') continue
+    if (String(field?.custom_field?.name || '').trim().toLowerCase() !== String(name).trim().toLowerCase()) continue
     const selected = field.selected_options
     const candidates = Array.isArray(selected) && selected.length
       ? selected.map(option => option?.value)
@@ -55,6 +55,15 @@ export function getIssuePriorityValues (raw) {
       if (text && !values.includes(text)) values.push(text)
     }
   }
+  return values
+}
+
+export function getReviewStatusValues (raw) {
+  return getCustomFieldValues(raw, 'Review Status')
+}
+
+export function getIssuePriorityValues (raw) {
+  const values = getCustomFieldValues(raw, 'Priority')
   return values.length ? values : getScopedLabelValues(raw?.labels, 'Priority')
 }
 

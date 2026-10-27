@@ -1,7 +1,7 @@
 import { migrateIssueSelection } from '../utils/issueIdentity'
 import { computed, watch } from 'vue'
 import { getScopedLabelValue, getScopedLabelValues, isScopedLabel } from '../utils/scopedLabels'
-import { getAssigneeNames, resolveAssigneeFilter, filterAssigneeKeys, getIssuePriority, getIssuePriorityValues } from '../utils/issueFields'
+import { getAssigneeNames, resolveAssigneeFilter, filterAssigneeKeys, getIssuePriority, getIssuePriorityValues, getReviewStatusValues } from '../utils/issueFields'
 
 // Single source of truth for an issue's effective status — used by the dropdown
 // derivation, the filter, and the graph so they never disagree. Returns the raw value
@@ -14,7 +14,7 @@ export const currentStatusOfRaw = (raw) => {
   return s
 }
 
-export function useGraphDerivedState ({ settings, nodes, edges }) {
+export function useGraphDerivedState ({ settings, nodes, edges, facetNodes = nodes }) {
   watch(() => [Object.keys(nodes).join('|'), settings.config?.gitlabSourceKind, settings.uiState.filters.selectedIids], () => {
     const previous = settings.uiState.filters.selectedIids
     if (!previous?.length || !Object.keys(nodes).length) return
@@ -23,7 +23,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
   }, { immediate: true })
   const allLabels = computed(() => {
     const labels = new Set()
-    Object.values(nodes).forEach(node => {
+    Object.values(facetNodes).filter(n => !n.externalContext).forEach(node => {
       if (node._raw.labels) {
         node._raw.labels.forEach(l => labels.add(l))
       }
@@ -38,7 +38,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
 
   const allStatuses = computed(() => {
     const statuses = new Set(STANDARD_STATUSES)
-    Object.values(nodes).forEach(node => {
+    Object.values(facetNodes).filter(n => !n.externalContext).forEach(node => {
       const s = currentStatusOfRaw(node?._raw)
       if (s) statuses.add(s)
     })
@@ -55,7 +55,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
 
   const allAuthors = computed(() => {
     const authors = new Set()
-    Object.values(nodes).forEach(node => {
+    Object.values(facetNodes).filter(n => !n.externalContext).forEach(node => {
       const name = node._raw.author?.name
       if (name) authors.add(name)
     })
@@ -64,7 +64,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
 
   const allAssignees = computed(() => {
     const assignees = new Set()
-    Object.values(nodes).forEach(node => {
+    Object.values(facetNodes).filter(n => !n.externalContext).forEach(node => {
       getAssigneeNames(node._raw).forEach(n => assignees.add(n))
     })
     return Array.from(assignees).sort()
@@ -72,7 +72,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
 
   const allParticipants = computed(() => {
     const people = new Set()
-    Object.values(nodes).forEach(node => {
+    Object.values(facetNodes).filter(n => !n.externalContext).forEach(node => {
       const raw = node?._raw || {}
       const parts = Array.isArray(raw.participants) ? raw.participants : []
       parts.forEach(p => {
@@ -102,7 +102,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
       if (!prev || prev === 'active') map[n] = s
     }
 
-    Object.values(nodes).forEach(node => {
+    Object.values(facetNodes).filter(n => !n.externalContext).forEach(node => {
       const raw = node?._raw || {}
       if (raw.author?.name) setState(raw.author.name, raw.author.state)
       if (raw.assignee?.name) setState(raw.assignee.name, raw.assignee.state)
@@ -119,7 +119,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
 
   const allMilestones = computed(() => {
     const milestones = new Set()
-    Object.values(nodes).forEach(node => {
+    Object.values(facetNodes).filter(n => !n.externalContext).forEach(node => {
       if (node._raw.milestone) {
         milestones.add(node._raw.milestone.title)
       }
@@ -129,7 +129,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
 
   const allPriorities = computed(() => {
     const priorities = new Set()
-    Object.values(nodes).forEach(node => {
+    Object.values(facetNodes).filter(n => !n.externalContext).forEach(node => {
       const p = getIssuePriority(node._raw)
       if (p) priorities.add(p)
     })
@@ -145,7 +145,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
     const buckets = {
       status: new Map(), labels: new Map(), excludedLabels: new Map(),
       authors: new Map(), assignees: new Map(), participants: new Map(),
-      milestones: new Map(), priorities: new Map(), types: new Map(),
+      milestones: new Map(), priorities: new Map(), types: new Map(), scopes: new Map(), reviewStatuses: new Map(),
       subscription: new Map(), mr: new Map(), due: new Map(),
       spent: new Map(), budget: new Map(), estimate: new Map(), tasks: new Map()
     }
@@ -170,6 +170,8 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
       ['participants', new Set(['participants']), (r) => (r.participants || []).forEach(p => inc(buckets.participants, p?.name || p?.username))],
       ['milestones', new Set(['milestones']), (r) => inc(buckets.milestones, r.milestone?.title || '@none')],
       ['priorities', new Set(['priorities']), (r) => inc(buckets.priorities, getIssuePriority(r) || '@none')],
+      ['scopes', new Set(['scopes']), r => (getScopedLabelValues(r.labels, 'Scope').length ? getScopedLabelValues(r.labels, 'Scope') : ['@none']).forEach(v => inc(buckets.scopes, v))],
+      ['reviewStatuses', new Set(['reviewStatuses']), r => (getReviewStatusValues(r).length ? getReviewStatusValues(r) : ['@none']).forEach(v => inc(buckets.reviewStatuses, v))],
       ['types', new Set(['types']), (r) => inc(buckets.types, getScopedLabelValue(r.labels, 'Type') || '@none')],
       ['subscription', new Set(['subscription']), (r) => inc(buckets.subscription, r.subscribed ? 'subscribed' : 'unsubscribed')],
       ['mr', new Set(['mr']), (r, n) => inc(buckets.mr, (Number(n?.mergeRequestsCount) || 0) > 0 ? 'has' : 'none')],
@@ -210,7 +212,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
       }]
     ]
 
-    const allNodes = Object.values(nodes)
+    const allNodes = Object.values(facetNodes).filter(n => !n.externalContext)
     for (const [, skip, extract] of dimensions) {
       for (const node of allNodes) {
         if (!passesFilters(node, skip)) continue
@@ -230,12 +232,15 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
 
   const allTypes = computed(() => {
     const types = new Set()
-    Object.values(nodes).forEach(node => {
+    Object.values(facetNodes).filter(n => !n.externalContext).forEach(node => {
       const t = getScopedLabelValue(node._raw.labels, 'Type')
       if (t) types.add(t)
     })
     return Array.from(types).sort()
   })
+
+  const allScopes = computed(() => [...new Set(Object.values(facetNodes).filter(n => !n.externalContext).flatMap(n => getScopedLabelValues(n._raw?.labels, 'Scope')))].sort())
+  const allReviewStatuses = computed(() => [...new Set(Object.values(facetNodes).filter(n => !n.externalContext).flatMap(n => getReviewStatusValues(n._raw)))].sort())
 
   // Returns true if `node` passes all currently-active filters except those whose dimension
   // name is in `skip`. Used by both `filteredNodes` (no skips) and `filterCounts` (skips
@@ -325,6 +330,13 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
       const wantNames = want.filter(v => v !== '@none')
       const type = getScopedLabelValue(nodeLabels, 'Type')
       if (!((!!type && wantNames.includes(type)) || (wantsNone && !type))) return false
+    }
+
+    for (const [dimension, selected, values] of [
+      ['scopes', f.selectedScopes, getScopedLabelValues(nodeLabels, 'Scope')],
+      ['reviewStatuses', f.selectedReviewStatuses, getReviewStatusValues(r)]
+    ]) {
+      if (!skip.has(dimension) && selected?.length && !selected.some(v => v === '@none' ? !values.length : values.includes(v))) return false
     }
 
     if (!skip.has('mr') && f.mrMode) {
@@ -459,6 +471,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
         (settings.uiState.filters.selectedMilestones?.length || 0) === 0 &&
         (settings.uiState.filters.selectedPriorities?.length || 0) === 0 &&
         (settings.uiState.filters.selectedTypes?.length || 0) === 0 &&
+        !settings.uiState.filters.selectedScopes?.length && !settings.uiState.filters.selectedReviewStatuses?.length &&
         (settings.uiState.filters.selectedStatuses?.length || 0) === 0 &&
         (settings.uiState.filters.selectedIids?.length || 0) === 0 &&
         !settings.uiState.filters.selectedSubscription &&
@@ -536,6 +549,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
           }
           else if (groupingMode === 'milestone') keys = [n.milestone ? n.milestone.title : 'No Milestone']
           else if (groupingMode === 'priority') keys = [getIssuePriority(n) || 'No Priority']
+          else if (groupingMode === 'reviewStatus') keys = getReviewStatusValues(n).length ? getReviewStatusValues(n) : ['No Review Status']
           else if (groupingMode === 'type') keys = [getScopedLabelValue(n.labels, 'Type') || 'No Type']
           else if (groupingMode === 'epic') {
             const parentType = String(n.parent?.work_item_type || '').trim().toLowerCase()
@@ -652,6 +666,9 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
       } else if (mode === 'priority') {
         const ks = getIssuePriorityValues(raw)
         keys = ks.length ? ks : ['No Priority']
+      } else if (mode === 'reviewStatus') {
+        const ks = getReviewStatusValues(raw)
+        keys = ks.length ? ks : ['No Review Status']
       } else if (mode === 'type') {
         const ks = getScopedLabelValues(labels, 'Type')
         keys = ks.length ? ks : ['No Type']
@@ -730,7 +747,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
     userStateByName,
     allMilestones,
     allPriorities,
-    allTypes,
+    allTypes, allScopes, allReviewStatuses,
     matchesFilters: node => passesFilters(node, new Set()),
     filteredNodes,
     filteredEdges,

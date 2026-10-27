@@ -16,6 +16,8 @@ const FILTER_MAP = {
   milestone: 'milestones',
   priority: 'priorities',
   type: 'types',
+  scope: 'scopes',
+  review: 'reviewStatuses',
   mr: 'mrMode',
   participant: 'participants',
   due: 'dueStatus',
@@ -27,7 +29,7 @@ const FILTER_MAP = {
 }
 const FILTER_ARRAYS = new Set([
   'statuses', 'labels', 'excludedLabels',
-  'authors', 'assignees', 'milestones', 'priorities', 'types', 'participants'
+  'authors', 'assignees', 'milestones', 'priorities', 'types', 'scopes', 'reviewStatuses', 'participants'
 ])
 
 // URL key ↔ snapshot.view field
@@ -65,7 +67,7 @@ const COLOR_VALUES = new Set([
 ])
 const GROUP_VALUES = new Set([
   'none', 'state', 'tag', 'author', 'assignee', 'milestone', 'priority', 'type', 'weight',
-  'epic', 'iteration', 'stale', 'svn_revision',
+  'epic', 'iteration', 'stale', 'svn_revision', 'reviewStatus',
   'timeline_created', 'timeline_updated', 'timeline_closed'
 ])
 const LINK_VALUES = new Set(['none', 'dependency', 'group'])

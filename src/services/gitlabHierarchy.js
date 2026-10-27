@@ -110,26 +110,68 @@ export function createHierarchyAdapter(apiBaseUrl, token, options = {}) {
       const args = schema.group.get('workItems').args || []
       if (!['types', 'first', 'after'].every(name => args.some(a => a.name === name))) throw new Error('Epic listing unsupported')
       const descendants = args.some(a => a.name === 'includeDescendantGroups')
-      if (!descendants) warnings.add('This GitLab version cannot explicitly control subgroup epic discovery.')
       index = []
-      let after = null
-      const cursors = new Set()
-      do {
-        const data = await post(`query EpicIndex($path: ID!, $after: String) {
-          group(fullPath: $path) { workItems(types: [EPIC], first: 100, after: $after${descendants ? ', includeDescendantGroups: ' + !!source.includeSubgroups : ''}) {
-            nodes { ${itemFields()} ${schema.hierarchy.has('parent') ? 'widgets { __typename ... on WorkItemWidgetHierarchy { parent { ' + itemFields() + ' } } }' : ''} } pageInfo { hasNextPage endCursor }
-          } }
-        }`, { path: group.full_path, after }, signal)
-        const connection = data?.group?.workItems
-        if (!connection) throw new Error('Epic listing unavailable')
-        index.push(...(connection.nodes || []).filter(Boolean).map(epicRecord))
-        if (index.length > maxItems || index.length >= maxItems && connection.pageInfo?.hasNextPage) { index = index.slice(0, maxItems); warnings.add('Epic index limit reached; results are incomplete.'); break }
-        if (!connection.pageInfo?.hasNextPage) break
-        after = connection.pageInfo.endCursor
-        if (!after || cursors.has(after)) throw new Error('Epic pagination did not advance')
-        cursors.add(after)
-        if (index.length >= maxItems) { index = index.slice(0, maxItems); warnings.add('Epic index limit reached; results are incomplete.'); break }
-      } while (true)
+      const scopes = [{ id: group.id, full_path: group.full_path }]
+      if (!descendants && source.includeSubgroups) {
+        try { scopes.push(...await restPages('/groups/' + encodeURIComponent(group.id) + '/descendant_groups', { all_available: true }, signal)) }
+        catch (error) {
+          if (isAbort(error)) throw error
+          if ([404, 405].includes(error?.response?.status)) {
+            const queue = [group.id], seen = new Set(queue)
+            while (queue.length) {
+              const id = queue.shift()
+              try {
+                for (const child of await restPages('/groups/' + encodeURIComponent(id) + '/subgroups', { all_available: true }, signal)) {
+                  if (seen.has(child.id)) continue
+                  seen.add(child.id); scopes.push(child); queue.push(child.id)
+                }
+              } catch (nestedError) {
+                if (isAbort(nestedError)) throw nestedError
+                warnings.add('Subgroup directory incomplete: ' + warningFor(nestedError))
+                if (nestedError.code === 'GLV_REQUEST_BUDGET') break
+              }
+            }
+          } else warnings.add('Subgroup directory incomplete: ' + warningFor(error))
+        }
+      }
+      let loadedGroups = 0
+      for (const scope of scopes) {
+        if (!scope.full_path) { warnings.add('A subgroup has no canonical path; epic coverage is partial.'); continue }
+        let after = null
+        const cursors = new Set()
+        try {
+          do {
+            const data = await post(`query EpicIndex($path: ID!, $after: String) {
+              group(fullPath: $path) { workItems(types: [EPIC], first: 100, after: $after${descendants ? ', includeDescendantGroups: ' + !!source.includeSubgroups : ''}) {
+                nodes { ${itemFields()} ${schema.hierarchy.has('parent') ? 'widgets { __typename ... on WorkItemWidgetHierarchy { parent { ' + itemFields() + ' } } }' : ''} } pageInfo { hasNextPage endCursor }
+              } }
+            }`, { path: scope.full_path, after }, signal)
+            const connection = data?.group?.workItems
+            if (!connection) throw new Error('Epic listing unavailable')
+            for (const item of connection.nodes || []) {
+              if (!item) continue
+              const actualPath = item.namespace?.fullPath
+              if (!descendants && !actualPath) { warnings.add('Epic namespace unavailable; subgroup boundary coverage is partial.'); continue }
+              if (!descendants && actualPath !== scope.full_path) continue
+              index.push({ ...epicRecord(item), namespacePath: actualPath || scope.full_path })
+            }
+            index = [...new Map(index.map(epic => [epic.id, epic])).values()]
+            if (index.length >= maxItems) { index = index.slice(0, maxItems); warnings.add('Epic index limit reached; results are incomplete.'); break }
+            if (!connection.pageInfo?.hasNextPage) break
+            after = connection.pageInfo.endCursor
+            if (!after || cursors.has(after)) throw new Error('Epic pagination did not advance')
+            cursors.add(after)
+          } while (true)
+          loadedGroups++
+        } catch (error) {
+          if (isAbort(error)) throw error
+          if (descendants || scopes.length === 1 && source.includeSubgroups) throw error
+          warnings.add('Epic coverage incomplete for ' + scope.full_path + ': ' + warningFor(error))
+        }
+        if (index.length >= maxItems) break
+      }
+      return { epics: index, mode, warnings: [...warnings], fullPath: group.full_path, status: !descendants ? 'Epics loaded from ' + loadedGroups + ' accessible groups' : '' }
+
     } catch (error) {
       if (isAbort(error)) throw error
       if (error.code === 'GLV_REQUEST_BUDGET') { warnings.add(error.message); return { epics: index, mode, warnings: [...warnings] } }

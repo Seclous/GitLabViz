@@ -22,6 +22,35 @@ function setup({ index = [item(1)], children = {}, capability = schema(), maxIte
   return { rest, graphql, adapter: createHierarchyAdapter('https://gitlab.test/api/v4', 'test', { rest, graphql, maxItems }) }
 }
 describe('epic hierarchy adapter', () => {
+  it('discovers canonical nested namespaces on older schemas with pagination and partial permissions', async () => {
+    const cap = schema()
+    cap.group.fields[0].args = cap.group.fields[0].args.filter(arg => arg.name !== 'includeDescendantGroups')
+    const ctx = setup({ capability: cap, restGet: async (url, config) => {
+      if (url !== '/groups/20/descendant_groups') return null
+      return config.params.page === 1
+        ? { data: [{ id: 21, full_path: 'a/core/sub' }, { id: 22, full_path: 'a/core/sub/nested' }], headers: { 'x-next-page': '2' } }
+        : { data: [{ id: 23, full_path: 'a/core/denied' }], headers: {} }
+    } })
+    ctx.graphql.post.mockImplementation(async (_, { query, variables }) => {
+      if (query.includes('HierarchyCapabilities')) return { data: { data: cap } }
+      if (variables.path.endsWith('/denied')) throw { response: { status: 403 } }
+      const nodes = variables.path === 'a/core'
+        ? [item(1), item(2, 'Epic', 'a/core/sub')]
+        : variables.path.endsWith('/nested') ? [item(3, 'Epic', variables.path)]
+          : [item(2, 'Epic', variables.path), item(2, 'Epic', variables.path)]
+      return { data: { data: { group: { workItems: connection(nodes, variables.path === 'a/core' && !variables.after ? 'next' : null) } } } }
+    })
+    const result = await ctx.adapter.listEpics(source)
+    expect(result.epics.map(epic => epic.id)).toEqual([item(1).id, item(2).id, item(3).id])
+    expect(result.status).toBe('Epics loaded from 3 accessible groups')
+    expect(result.warnings.join(' ')).toMatch(/a\/core\/denied/)
+    expect(ctx.rest.get.mock.calls.filter(([url]) => url.endsWith('/descendant_groups'))).toHaveLength(2)
+    ctx.rest.get.mockClear()
+    const root = await ctx.adapter.listEpics({ ...source, includeSubgroups: false })
+    expect(root.epics.map(epic => epic.id)).toEqual([item(1).id])
+    expect(root.warnings).toEqual([])
+    expect(ctx.rest.get.mock.calls.some(([url]) => url.endsWith('/descendant_groups'))).toBe(false)
+  })
   it('recurses across projects, subgroups and external groups without importing sibling epics', async () => {
     const root = item(1), sub = item(2, 'Epic', 'a/core/sub'), sibling = item(9)
     const issues = [item(11, 'Issue', 'a/core/p1'), item(12, 'Issue', 'a/core/sub/p2'), item(13, 'Issue', 'other/p3')]

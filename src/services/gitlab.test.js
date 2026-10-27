@@ -277,7 +277,7 @@ describe('gitlab service', () => {
     const encodedProjectId = encodeURIComponent('group/project');
     const result = await fetchIssueLinks(mockClient, 'group/project', mockIssueId);
 
-    expect(mockClient.get).toHaveBeenCalledWith(`/projects/${encodedProjectId}/issues/${mockIssueId}/links`, {});
+    expect(mockClient.get).toHaveBeenCalledWith(`/projects/${encodedProjectId}/issues/${mockIssueId}/links`, { params: { page: 1, per_page: 100 } });
     expect(result).toEqual([{ id: 2 }]);
   });
 

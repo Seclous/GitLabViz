@@ -118,6 +118,7 @@ export default defineConfig(({ mode }) => {
       '__BUILD_TIME__': JSON.stringify(buildTime),
       '__GIT_COMMIT__': JSON.stringify(gitCommit || ''),
       '__GIT_BRANCH__': JSON.stringify(gitBranch || ''),
+      // Local remotes can identify a private account or project. Keep them out of the app.
       '__GIT_REPO__': JSON.stringify(''),
       '__GIT_DIRTY__': JSON.stringify(gitDirty),
       '__CI_PROVIDER__': JSON.stringify(isGitHubActions ? 'github' : ''),

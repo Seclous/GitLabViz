@@ -42,9 +42,9 @@ describe('group slices', () => {
   })
   it('keeps hierarchy and dependency layers distinct and hides related links', () => {
     const slice = { nodes:{e:{id:'e',type:'gitlab_epic',_raw:{title:'Epic'}},a:issue('a'),b:issue('b')}, seeds:['e','a','b'], blocked:new Set(), edges:{ea:contains('e','a'),ab:edge('a','b'),ba:edge('b','a','relates')} }
-    expect(Object.values(presentSlice(slice,slice.nodes,{layer:'hierarchy'}).edges).map(e=>e.kind)).toEqual(['contains'])
+    expect(Object.values(presentSlice(slice,slice.nodes,{layer:'hierarchy',showContains:true}).edges).map(e=>e.kind)).toEqual(['contains'])
     expect(Object.values(presentSlice(slice,slice.nodes,{layer:'dependencies'}).edges).map(e=>e.label)).toEqual(['blocks'])
-    expect(Object.values(presentSlice(slice,slice.nodes).edges)).toHaveLength(2)
+    expect(Object.values(presentSlice(slice,slice.nodes).edges)).toHaveLength(1)
   })
   it('bounds graph rendering without dropping the underlying slice or creating dangling edges', () => {
     const nodes = Object.fromEntries(Array.from({length:205},(_,i)=>[String(i),issue(String(i))]))

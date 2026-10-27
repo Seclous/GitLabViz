@@ -116,7 +116,7 @@ import { ref, computed, onMounted, onUnmounted, watch, toRaw } from 'vue'
 import * as d3 from 'd3'
 import { useSettingsStore } from '../composables/useSettingsStore'
 import { getScopedLabelValue, getScopedLabelValues, isScopedLabel } from '../utils/scopedLabels'
-import { getAssigneeNames, filterAssigneeKeys, getIssuePriority, getIssuePriorityValues } from '../utils/issueFields'
+import { getAssigneeNames, filterAssigneeKeys, getIssuePriority, getIssuePriorityValues, getReviewStatusValues } from '../utils/issueFields'
 import { currentStatusOfRaw } from '../composables/useGraphDerivedState'
 import IssueContextMenu from './IssueContextMenu.vue'
 
@@ -125,7 +125,9 @@ const emit = defineEmits(['issue-state-change', 'issue-assignee-change'])
 const onIssueStateChange    = (payload) => emit('issue-state-change',    payload)
 const onIssueAssigneeChange = (payload) => emit('issue-assignee-change', payload)
 
+import { relativeToGroup } from '../utils/relativeToGroup'
 const props = defineProps({
+  selectedGroupPath: { type: String, default: '' },
   nodes: Object,
   edges: Object,
   colorMode: { type: String, default: 'state' }, // 'state' | 'tag' | 'author'
@@ -600,7 +602,7 @@ onUnmounted(() => {
   if (saveTimeout) { clearTimeout(saveTimeout); saveTimeout = null }
 })
 
-watch(() => [props.nodes, props.edges, props.projectLanes, props.colorMode, props.groupBy, props.linkMode, props.hideUnlinked, props.repulsion, props.friction, props.groupGravity, props.linkStrength, props.linkDistance, props.centerGravity, props.gridStrength, props.gridSpacing, props.cloneMultiAssignee, props.assigneeFilter], () => {
+watch(() => [props.nodes, props.edges, props.selectedGroupPath, props.projectLanes, props.colorMode, props.groupBy, props.linkMode, props.hideUnlinked, props.repulsion, props.friction, props.groupGravity, props.linkStrength, props.linkDistance, props.centerGravity, props.gridStrength, props.gridSpacing, props.cloneMultiAssignee, props.assigneeFilter], () => {
   updateGraph()
 }, { deep: true })
 
@@ -1097,6 +1099,9 @@ function updateGraph() {
     } else if (groupBy === 'priority') {
       const keys = getIssuePriorityValues(raw)
       groupKeys = keys.length ? keys : ['No Priority']
+    } else if (groupBy === 'reviewStatus') {
+      const keys = getReviewStatusValues(raw)
+      return keys.length ? keys : ['No Review Status']
     } else if (groupBy === 'type') {
       const keys = getScopedLabelValues(labels, 'Type')
       groupKeys = keys.length ? keys : ['No Type']
@@ -1445,7 +1450,7 @@ function updateGraph() {
     // Determine group key for each node
     nodesData.forEach(d => {
         if (groupBy === 'tag') d._groupKey = d.tag
-        else if (groupBy === 'project') d._groupKey = d.projectPath || d.namespacePath || 'Epic hierarchy'
+        else if (groupBy === 'project') d._groupKey = relativeToGroup(d.projectPath || d.namespacePath, props.selectedGroupPath) || 'Epic hierarchy'
         else if (groupBy === 'author') d._groupKey = d.authorName
         else if (groupBy === 'state') {
           // "Status" grouping: prefer Status scoped label, fallback to a simple state bucket.
@@ -2407,7 +2412,7 @@ function render() {
         ctx.textAlign = 'left'
         
         // Check for JIRA ID in title
-        let displayId = (node.inSelectedGroup || node.externalToGroup) ? node.fullReference : `#${node._raw?.iid ?? node.iid ?? node.id}`
+        let displayId = (node.inSelectedGroup || node.externalContext || node.externalToGroup) ? relativeToGroup(node.fullReference, props.selectedGroupPath) : `#${node._raw?.iid ?? node.iid ?? node.id}`
         let displayTitle = node._raw.title || node.name || 'Untitled'
         let jiraId = null
         const titleText = node._raw.title || ''
@@ -2418,7 +2423,8 @@ function render() {
             displayTitle = jiraMatch[2]
         }
         
-        if (node.externalToGroup) displayTitle = 'External to group · ' + displayTitle
+        if (node.outsideSelectedGroup || node.externalToGroup) displayTitle = 'Outside selected group · ' + displayTitle
+        else if (node.notInIndex) displayTitle = 'Not in index · ' + displayTitle
         ctx.fillText(displayId, x + 15, headerY)
         
         if (jiraId) {

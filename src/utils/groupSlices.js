@@ -22,19 +22,21 @@ export function dependencyClosure(seedIds, nodes, edges, { hops = 1, direction =
   return ids
 }
 
-export function selectSlice({ mode, value, nodes, edges, hierarchyNodes = {}, hierarchyEdges = {}, hops = 1, direction = 'upstream' }) {
+export function selectSlice({ mode, value, nodes, edges, hierarchyNodes = {}, hierarchyEdges = {}, hops = 1, direction = 'upstream', allowedPrimaryIds = null }) {
   const allNodes = { ...nodes, ...hierarchyNodes }, allEdges = { ...edges, ...hierarchyEdges }
   const blocked = dependencySummary(allNodes, allEdges).blocked
   let seeds = []
+  if (mode === 'all') seeds = Object.values(nodes).filter(n => n.type === 'gitlab_issue' && !n.externalContext).map(n => n.id)
   if (mode === 'epic' && value) seeds = Object.keys(hierarchyNodes)
-  if (mode === 'scope' && value) seeds = Object.values(nodes).filter(n => (n._raw?.labels || []).some(l => l.toLowerCase() === ('scope::' + value).toLowerCase())).map(n => n.id)
+  if (mode === 'scope' && value) seeds = Object.values(nodes).filter(n => !n.externalContext && (n._raw?.labels || []).some(l => l.toLowerCase() === ('scope::' + value).toLowerCase())).map(n => n.id)
   if (mode === 'issue' && nodes[value]) seeds = [value]
   if (mode === 'blocked') seeds = [...blocked].filter(id => !nodes[id]?.externalContext)
+  if (allowedPrimaryIds) seeds = seeds.filter(id => allNodes[id]?.type === 'gitlab_epic' || allowedPrimaryIds.has(id))
   const ids = dependencyClosure(seeds, allNodes, allEdges, { hops, direction })
   return { nodes: Object.fromEntries([...ids].map(id => [id, allNodes[id]])), edges: Object.fromEntries(Object.entries(allEdges).filter(([, e]) => ids.has(e.source) && ids.has(e.target))), seeds, blocked }
 }
 
-export function presentSlice(slice, filteredNodes, { strict = false, hops = 1, direction = 'upstream', collapsed = [], layer = 'both', nodeLimit = 200, edgeLimit = 400 } = {}) {
+export function presentSlice(slice, filteredNodes, { strict = false, hops = 1, direction = 'upstream', collapsed = [], layer = 'both', showContains = false, nodeLimit = 200, edgeLimit = 400 } = {}) {
   const seedSet = new Set(slice.seeds)
   const visibleSeeds = slice.seeds.filter(id => filteredNodes[id] && !slice.nodes[id]?.externalContext)
   const ids = strict ? new Set(Object.keys(filteredNodes).filter(id => slice.nodes[id])) : dependencyClosure(visibleSeeds, slice.nodes, slice.edges, { hops, direction })
@@ -65,7 +67,7 @@ export function presentSlice(slice, filteredNodes, { strict = false, hops = 1, d
   const dedup = new Set()
   for (const edge of Object.values(slice.edges)) {
     const contains = edge.kind === 'contains'
-    if (contains ? layer === 'dependencies' : (layer === 'hierarchy' || edge.label !== 'blocks')) continue
+    if (contains ? (!showContains || layer === 'dependencies') : (layer === 'hierarchy' || edge.label !== 'blocks')) continue
     const source = representative(edge.source), target = representative(edge.target)
     if (source === target || !shown.has(source) || !shown.has(target)) continue
     const key = [edge.label, source, target].join('|'); if (dedup.has(key)) continue; dedup.add(key); eligibleEdges++

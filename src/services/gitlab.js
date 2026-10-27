@@ -276,8 +276,12 @@ export const fetchGroupIssuesRest = async (client, source, projects, onProgress,
   const counts = new Map()
   for (const issue of result) if (issue.state === 'opened') counts.set(String(issue.project_id), (counts.get(String(issue.project_id)) || 0) + 1)
   const fallback = Object.values(projects).filter(project => {
-    if (source.includeShared || options.params?.updated_after || (options.state || 'opened') !== 'opened') return true
-    return project.open_issues_count == null || Number(project.open_issues_count || 0) > (counts.get(String(project.id)) || 0)
+    // The group endpoint is authoritative for ordinary projects, including deltas
+    // and closed history. Only reconcile known shared projects or an explicit
+    // open-count discrepancy on an initial open scan.
+    if (source.includeShared && project.shared_with_groups?.length && !String(project.path_with_namespace || '').startsWith((source.fullPath || source.idOrPath) + '/')) return true
+    if (options.params?.updated_after || (options.state || 'opened') !== 'opened') return false
+    return project.open_issues_count != null && Number(project.open_issues_count) > (counts.get(String(project.id)) || 0)
   })
   const warnings = [...(projects.__glvWarnings || []), ...(issues.__glvWarnings || [])]
   for (const project of fallback) {
@@ -348,7 +352,9 @@ const ensureIssueCaps = async (client, fullPath) => {
 // Custom fields live on work-item widgets rather than on the Issue GraphQL type.
 // Aliased lookups keep requests bounded while supporting servers without Query.nodes.
 export const enrichIssueCustomFieldsFromGraphql = async (client, projectId, issues, onProgress, options = {}) => {
-  if (!client || client.__glvCustomFieldsUnsupported || !projectId || !Array.isArray(issues) || !issues.length) return issues
+  const warn = message => options.onWarning?.(message)
+  if (client?.__glvCustomFieldsUnsupported) { warn('Custom fields are unavailable on this GitLab schema.'); return issues }
+  if (!client || !projectId || !Array.isArray(issues) || !issues.length) return issues
   let fullPath = String(projectId).trim()
   try {
     if (/^\d+$/.test(fullPath)) {
@@ -361,8 +367,12 @@ export const enrichIssueCustomFieldsFromGraphql = async (client, projectId, issu
     }
     const items = issues.filter(i => i?.iid != null)
     const batchSize = Math.max(1, Math.min(25, Number(options.customFieldsBatchSize) || 25))
-    for (let offset = 0; offset < items.length; offset += batchSize) {
-      const batch = items.slice(offset, offset + batchSize)
+    const batches = []
+    for (let offset = 0; offset < items.length; offset += batchSize) batches.push(items.slice(offset, offset + batchSize))
+    let completed = 0
+    while (batches.length) {
+      abortRequest(options.signal)
+      const batch = batches.shift()
       const variables = { fullPath }
       const definitions = ['$fullPath: ID!']
       const lookups = batch.map((issue, index) => {
@@ -379,22 +389,38 @@ export const enrichIssueCustomFieldsFromGraphql = async (client, projectId, issu
           } }
         }`
       })
-      onProgress?.(`Enriching custom fields\n${Math.min(offset + batch.length, items.length)} / ${items.length}`)
-      const response = await gitlabPost(client, '', { data: {
+      onProgress?.(`Enriching custom fields\n${Math.min(completed + batch.length, items.length)} / ${items.length}`)
+      let response
+      try {
+        response = await gitlabPost(client, '', { data: {
         query: `query EnrichIssueCustomFields(${definitions.join(', ')}) {
           namespace(fullPath: $fullPath) { ${lookups.join('\n')} }
         }`,
         variables
-      } }, { maxRetries: 1 })
+        }, signal: options.signal }, { maxRetries: 1 })
+      } catch (error) {
+        // GitLab installations impose different alias/complexity limits. Split
+        // rejected batches without increasing concurrent project requests.
+        if (error?.response?.status !== 422 || batch.length < 2) throw error
+        const middle = Math.ceil(batch.length / 2)
+        batches.unshift(batch.slice(0, middle), batch.slice(middle))
+        continue
+      }
       const payload = response?.data
       if (payload?.errors?.length) {
+        if (batch.length > 1 && payload.errors.some(error => /complexity|too many aliases|alias.*limit/i.test(error?.message || ''))) {
+          const middle = Math.ceil(batch.length / 2)
+          batches.unshift(batch.slice(0, middle), batch.slice(middle))
+          continue
+        }
         // Older GitLab versions do not expose custom fields. Leave label fallback intact.
         client.__glvCustomFieldsUnsupported = payload.errors.some(error =>
           /undefinedField|undefinedType/.test(error?.extensions?.code || '') ||
           /doesn't exist|not defined|Unknown type|Cannot query field/i.test(error?.message || ''))
-        return issues
+        warn('Custom fields could not be loaded; check GitLab schema and permissions.'); return issues
       }
       const namespace = payload?.data?.namespace
+      if (!namespace) warn('Custom-field namespace unavailable for ' + fullPath + '.')
       batch.forEach((issue, index) => {
         const item = namespace?.[`item${index}`]
         if (!Array.isArray(item?.widgets)) return
@@ -406,9 +432,11 @@ export const enrichIssueCustomFieldsFromGraphql = async (client, projectId, issu
               : { value: field.textValue ?? field.numberValue ?? null })
           })))
       })
+      completed += batch.length
     }
   } catch (error) {
-    console.warn('[GitLab] custom-field enrichment failed:', error?.message || error)
+    abortRequest(options.signal)
+    warn('Custom-field enrichment failed' + (error?.response?.status ? ' (HTTP ' + error.response.status + ')' : '') + '.')
   }
   return issues
 }
@@ -1275,10 +1303,18 @@ export const fetchProjectIssues = async (client, projectId, onProgress, options 
 
 export const fetchIssueLinks = async (client, projectId, issueIid, config = {}) => {
   if (!projectId || issueIid == null) throw new Error('Issue links require project ID and IID')
-  const response = await gitlabGet(client,
-    '/projects/' + encodeURIComponent(projectId) + '/issues/' + issueIid + '/links',
-    config, { maxRetries: 2 })
-  return response.data
+  const result = [], budget = createRequestBudget(config.maxRequests || 50)
+  let page = 1
+  do {
+    budget.claim(config.signal)
+    const response = await gitlabGet(client,
+      '/projects/' + encodeURIComponent(projectId) + '/issues/' + issueIid + '/links',
+      { ...config, params: { ...config.params, per_page: 100, page } }, { maxRetries: 2 })
+    if (!Array.isArray(response.data)) throw new Error('Unexpected issue links response')
+    result.push(...response.data)
+    page = nextRestPage(response, page)
+  } while (page)
+  return result
 }
 
 // Resource milestone events: chronological log of milestone add/remove on an issue.

@@ -8,6 +8,8 @@ vi.mock('../services/gitlab', () => {
     createGitLabClient: vi.fn(() => ({
       get: vi.fn(async () => ({ data: { name: 'Me', id: 123 } }))
     })),
+    gitlabRequest: vi.fn(async (client, method, ...args) => client[method](...args)),
+    enrichIssueCustomFieldsFromGraphql: vi.fn(async (_, path, issues) => issues),
     createGitLabGraphqlClient: vi.fn(),
     enrichEpicTitlesFromRest: vi.fn(),
     enrichIssuesFromGraphql: vi.fn(),
@@ -46,14 +48,15 @@ describe('useDataLoader', () => {
 
   it('initCachedData loads cached nodes/edges but filters out svn nodes', async () => {
     await localforage.clear()
-    await writeGitLabSourceCache({}, { nodes: {
+    const cacheConfig = { enableGitLab: true, enableSvn: false, token: 't', projectId: 'p', gitlabApiBaseUrl: 'https://gitlab.example' }
+    await writeGitLabSourceCache(cacheConfig, { meta: { userId: '123', fullValidatedAt: Date.now() }, nodes: {
       'issue:1': { id: 'issue:1', type: 'gitlab_issue', _raw: {} },
       'svn-1': { id: 'svn-1', type: 'svn_commit', _raw: {} }
     }, edges: { 'svn-1-1': { source: 'svn-1', target: 'issue:1' } } })
 
     const settings = reactive({
       meta: {},
-      config: { enableGitLab: false, enableSvn: false }
+      config: cacheConfig
     })
     const nodes = reactive({})
     const edges = reactive({})
@@ -250,6 +253,14 @@ describe('useDataLoader', () => {
 
   it('loads duplicate issue numbers across group projects without changing the view', async () => {
     const gitlab = await import('../services/gitlab')
+    gitlab.createGitLabGraphqlClient.mockReturnValueOnce({}).mockReturnValueOnce({})
+    gitlab.enrichIssueCustomFieldsFromGraphql.mockImplementation(async (_, path, issues) => {
+      for (const issue of issues) issue.custom_field_values = [
+        { custom_field: { name: 'Priority' }, selected_options: [{ value: path === 'team/a' ? 'High' : 'Low' }] },
+        { custom_field: { name: 'Review Status' }, selected_options: [{ value: 'Ready' }] }
+      ]
+      return issues
+    })
     gitlab.fetchGroupProjects.mockResolvedValueOnce({ 11: { id: 11, path_with_namespace: 'team/a' }, 12: { id: 12, path_with_namespace: 'team/b' } })
     gitlab.fetchGroupIssuesRest.mockResolvedValueOnce([
       { id: 101, project_id: 11, iid: 42, title: 'First', state: 'opened', labels: [], references: { full: 'team/a#42' } },
@@ -317,6 +328,15 @@ describe('useDataLoader', () => {
     expect(Object.keys(nodes).sort()).toEqual(['issue:101', 'issue:102'])
     expect(nodes['issue:101'].fullReference).toBe('team/a#42')
     expect(nodes['issue:102'].fullReference).toBe('team/b#42')
+    expect(nodes['issue:101']._raw.custom_field_values[0].selected_options[0].value).toBe('High')
+    expect(nodes['issue:102']._raw.custom_field_values[0].selected_options[0].value).toBe('Low')
+    expect(gitlab.enrichIssueCustomFieldsFromGraphql.mock.calls.map(call => call[1])).toEqual(['team/a', 'team/b'])
+    // An unchanged issue from an older cache still gets its missing fields on a delta sync.
+    delete nodes['issue:102']._raw.custom_field_values
+    gitlab.fetchGroupProjects.mockResolvedValueOnce({ 11: { id: 11, path_with_namespace: 'team/a' }, 12: { id: 12, path_with_namespace: 'team/b' } })
+    gitlab.fetchGroupIssuesRest.mockResolvedValueOnce([])
+    await loadData()
+    expect(nodes['issue:102']._raw.custom_field_values[0].selected_options[0].value).toBe('Low')
     expect(vizMode.value).toBe('issues')
     expect(error.value).toBe('')
   })
@@ -434,6 +454,7 @@ describe('useDataLoader', () => {
     const svnRecentCommits = ref([])
     const svnCommitCount = ref(0)
     const gitlabCacheMeta = ref({
+      fullValidatedAt: Date.now(), userId: '123',
       sourceKey: gitlabSourceCacheKey(settings.config),
       projectId: 'p',
       apiBaseUrl: 'https://gitlab.example.com/api/v4',

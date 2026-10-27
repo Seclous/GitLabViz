@@ -1,6 +1,6 @@
 import { toRaw, watch, onBeforeUnmount } from 'vue'
 import { issueKey, normalizeIssueIdentity, issueReference } from '../utils/issueIdentity'
-import { getGitLabSource, gitlabSourceCacheKey, readGitLabSourceCache, writeGitLabSourceCache, clearGitLabSourceCache } from '../services/gitlabSourceCache'
+import { getGitLabSource, gitlabSourceCacheKey, readGitLabSourceCache, writeGitLabSourceCache, clearGitLabSourceCache, CACHE_ACCESS_TTL_MS, verifyGitLabAccess } from '../services/gitlabSourceCache'
 import localforage from 'localforage'
 import {
   createGitLabClient,
@@ -8,6 +8,7 @@ import {
   describeGitLabRequestError,
   enrichEpicTitlesFromRest,
   enrichIssuesFromGraphql,
+  enrichIssueCustomFieldsFromGraphql,
   fetchProjectIssuesRest,
   fetchGroupIssuesRest,
   fetchGroupProjects,
@@ -134,7 +135,7 @@ export function useDataLoader ({
     const revision = ++cacheRestoreRevision
     try {
       const config = { ...settings.config }
-      const cache = await readGitLabSourceCache(config)
+      const cache = config.token ? await readGitLabSourceCache(config) : null
       if (revision !== cacheRestoreRevision || gitlabSourceCacheKey(config) !== gitlabSourceCacheKey(settings.config)) return
       clearIssueState()
       const cachedMeta = cache?.meta
@@ -142,6 +143,7 @@ export function useDataLoader ({
         if (cachedMeta.partial) error.value = 'Cached issue index is partial. Refresh to complete coverage.'
         gitlabCacheMeta.value = {
           ...cachedMeta,
+          projects: cache.projects || {},
           nodes: cachedMeta.nodes || 0,
           edges: cachedMeta.edges || 0,
           updatedAt: cachedMeta.updatedAt || null,
@@ -190,7 +192,7 @@ export function useDataLoader ({
       }
 
       // If no cached data exists at all, populate a small sample graph so the UI isn't empty.
-      if (Object.keys(nodes).length === 0 && Object.keys(edges).length === 0) {
+      if (!settings.config.token && Object.keys(nodes).length === 0 && Object.keys(edges).length === 0) {
         const mock = createMockIssuesGraph()
         Object.assign(nodes, mock.nodes)
         Object.assign(edges, mock.edges)
@@ -198,7 +200,9 @@ export function useDataLoader ({
         Object.assign(issueGraphSnapshot.edges, mock.edges)
       }
     } catch (e) {
-      console.error('Failed to load cached data:', e)
+      if (revision !== cacheRestoreRevision) return
+      clearIssueState()
+      if (settings.config.token) error.value = 'Cached data could not be authorized. Refresh to verify GitLab access.'
     }
   }
 
@@ -207,7 +211,7 @@ export function useDataLoader ({
     pendingFullSync = true
     clearIssueState()
     void initCachedData()
-  })
+  }, { flush: 'sync' })
 
   const updateAllSvnCaches = async (override) => {
     if (!isElectron.value) {
@@ -343,7 +347,7 @@ export function useDataLoader ({
     // Incremental GitLab sync (skip existing data) if cache matches this project.
     const cachedCursor = String(gitlabCacheMeta.value?.syncCursor || '').trim()
     const sameGitlabCacheIdentity = gitlabCacheMeta.value?.sourceKey === gitlabSourceCacheKey(settings.config)
-    let canIncrementalGitLab = doGitLab && sameGitlabCacheIdentity && !!cachedCursor
+    let canIncrementalGitLab = doGitLab && sameGitlabCacheIdentity && !!cachedCursor && Date.now() - (gitlabCacheMeta.value.fullValidatedAt || 0) < CACHE_ACCESS_TTL_MS
     if (forceFull) canIncrementalGitLab = false
 
     // IMPORTANT: do NOT clear existing data up front.
@@ -358,6 +362,8 @@ export function useDataLoader ({
     let didGitLabFetch = false
     let gitlabSyncCursorForSave = null
     let gitlabIndexPartial = false
+    let verifiedIdentity = null
+    const customFieldWarnings = []
 
     try {
       // 0. Refresh Mattermost (ChatTools) session data (lightweight)
@@ -397,16 +403,11 @@ export function useDataLoader ({
         loadingMessage.value = canIncrementalGitLab ? 'Issues\nfetching updates…' : 'Issues\nstarting…'
         updateStatus.value = { loading: true, source: 'gitlab', message: 'Fetching issues...' }
         try {
-          // Cache "me" for dynamic presets (By me / Assigned to me)
-          try {
-            const me = await restClient.get('/user')
-            settings.meta.gitlabMeName = me?.data?.name || ''
-            settings.meta.gitlabMeId = me?.data?.id || null
-          } catch (e) {
-            console.warn('[GitLab] Failed to fetch /user for presets:', e)
-            settings.meta.gitlabMeName = ''
-            settings.meta.gitlabMeId = null
-          }
+          verifiedIdentity = await verifyGitLabAccess(sourceConfig, sourceSignal)
+          ensureCurrentSource()
+          source.fullPath = verifiedIdentity.fullPath
+          settings.meta.gitlabMeName = verifiedIdentity.userName
+          settings.meta.gitlabMeId = Number(verifiedIdentity.userId)
 
           // Best-effort: detect scopes + expiry to enable/disable write features and show expiry in UI.
           try {
@@ -520,6 +521,26 @@ export function useDataLoader ({
               updateStatus.value = { loading: true, source: 'gitlab', message: msg }
             })
           }
+          if (gqlClient && source.kind === 'group') {
+            const fetched = new Set(issues.map(i => String(i.id)))
+            const backfill = Object.values(nodes).filter(n => !replaceGitLabDataOnSuccess && n?.type === 'gitlab_issue' && !n.externalContext && n._raw && !fetched.has(String(n._raw.id)) && n._raw.custom_field_values == null).map(n => n._raw)
+            const byProject = new Map()
+            for (const issue of [...issues, ...backfill]) {
+              const id = String(issue.project_id)
+              if (!byProject.has(id)) byProject.set(id, [])
+              byProject.get(id).push(issue)
+            }
+            const queue = [...byProject]
+            await Promise.all(Array.from({ length: Math.min(3, queue.length) }, async () => {
+              while (queue.length) {
+                ensureCurrentSource()
+                const [id, projectIssues] = queue.shift()
+                const path = projectDirectory[id]?.path_with_namespace || projectIssues[0]?.references?.full?.split('#')[0]
+                if (!path) { customFieldWarnings.push('Custom fields unavailable for project ' + id); continue }
+                await enrichIssueCustomFieldsFromGraphql(gqlClient, path, projectIssues, undefined, { signal: sourceSignal, onWarning: message => customFieldWarnings.push(path + ': ' + message) })
+              }
+            }))
+          }
           if (restClient && source.kind === 'project') {
             await enrichEpicTitlesFromRest(restClient, settings.config.projectId, issues, (msg) => {
               loadingMessage.value = msg
@@ -528,6 +549,7 @@ export function useDataLoader ({
           }
 
           ensureCurrentSource()
+          if (customFieldWarnings.length) error.value = 'Custom field coverage is partial: ' + [...new Set(customFieldWarnings)].join('; ')
 
           // Create nodes
           loadingMessage.value = 'Building graph\ncreating nodes…'
@@ -599,6 +621,7 @@ export function useDataLoader ({
           // Persist sync cursor (conservative watermark) for next incremental run
           settings.meta.gitlabSyncCursor = gitlabSyncCursorForSave
         } catch (e) {
+          if ([401, 403, 404].includes(e?.response?.status)) { clearIssueState(); pendingFullSync = true; await clearGitLabSourceCache(sourceConfig) }
           console.error(e)
           error.value = `GitLab Error: ${describeGitLabRequestError(e)}`
           if (!settings.config.enableSvn) throw e
@@ -779,6 +802,10 @@ export function useDataLoader ({
           ensureCurrentSource()
           const syncCursor = gitlabSyncCursorForSave || null
           const meta = {
+            userId: verifiedIdentity?.userId,
+            fullPath: verifiedIdentity?.fullPath,
+            fullValidatedAt: canIncrementalGitLab ? gitlabCacheMeta.value.fullValidatedAt : now,
+            customFieldWarnings,
             nodes: Object.keys(nodes).length,
             edges: Object.keys(edges).length,
             updatedAt: now,
@@ -790,7 +817,7 @@ export function useDataLoader ({
           }
           const savedMeta = await writeGitLabSourceCache(sourceConfig, { nodes: toRaw(nodes), edges: toRaw(edges), projects: projectDirectory, meta })
           ensureCurrentSource()
-          gitlabCacheMeta.value = savedMeta
+          gitlabCacheMeta.value = { ...savedMeta, projects: projectDirectory }
         }
         const now = Date.now()
         lastUpdated.value = now

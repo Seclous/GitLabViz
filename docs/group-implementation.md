@@ -1,5 +1,49 @@
 # Group browsing implementation
 
+## Review follow-up: 2026-10-27
+
+All 15 findings in `REVIEW_other-additions_2026-10-27.md` are addressed.
+Scope and Review Status filters are now included, following the user's updated
+decision. The stage notes below record the original implementation and its
+earlier deferrals; this section describes the current behavior.
+
+Group issues receive bounded, cancellable custom-field enrichment by project,
+including missing values in existing caches. Oversized GraphQL batches split
+adaptively when GitLab rejects their complexity. Facets use the complete index.
+Scope labels match case-insensitively; Review Status uses the custom field.
+Both support multi-selection, empty values, grouping, shared URLs and presets.
+
+All issues is the default lens. Lists include the full indexed selection; graphs
+start at 200 nodes with progressive expansion and explicit Render all confirmation.
+Project/subgroup browsing works within the loaded index. Explorer visibility is
+persisted, project names are relative to the selected group, and containment
+arrows have an independent toggle, hidden by default.
+
+Older GitLab schemas discover epics through bounded, paginated descendant-group
+enumeration and per-namespace Work Item queries. Partial coverage is reported
+when a namespace is inaccessible or a request budget is exhausted. Normal group
+incremental and closed-history refreshes avoid per-project request fanout.
+
+Issue and relationship caches are partitioned by a token fingerprint and verified
+account, with access checks and periodic full synchronization. Plaintext tokens
+are not cache keys. Completed link observations survive cancellation; link
+retrieval follows pagination. Coverage distinguishes fresh observations from
+unscanned issues, and context issues distinguish outside-group membership from
+absence in the index.
+
+Validation: 305 tests passed, one existing test skipped; production build and
+standalone bundle/hash smoke checks passed. A Chromium integration test exercises
+the built HTML with a mocked API, cross-project IID collisions, custom fields,
+both new filters, relative project paths and Explorer visibility. Live internal
+browser testing against the configured test group loaded 255 indexed issues across 21
+projects and confirmed populated Priority, Scope and Review Status menus without
+custom-field warnings. Credentials remained in the browser. Root `index.html`
+matches `dist/index.html`.
+
+The new push/PR validation workflow runs tests, build, bundle/hash verification
+and the mocked Chromium test, then uploads the HTML and checksum. Remote GitHub
+Actions execution has not been observed in this local work session.
+
 ## Stage 0: baseline
 
 The baseline includes the existing Priority custom-field and case-insensitive
@@ -36,7 +80,7 @@ the same versioned record. In-flight loads cannot restore another source's data.
 
 Validation: automated identity, migration, pagination, source-isolation, duplicate-IID,
 search and JSON export round-trip coverage. Live localhost testing against
-example-team/example-group loaded 254 issues, kept Graph on switching to Group, restored
+the configured test group loaded 254 issues, kept Graph on switching to Group, restored
 the cache after reload, found three different project issues numbered #42, and
 matched a single issue by its full reference. Scope/Review Status filters remain
 deferred by request.
@@ -63,7 +107,7 @@ unknown. Kiosk shows these counts separately from the renamed Critical /
 attention heuristic. Relationship state also restores when Kiosk opens directly.
 
 Validation: 253 automated tests passed, one skipped; production build passed.
-Live localhost testing against `example-team/example-group` indexed 254 of 254 issues,
+Live localhost testing against the configured test group indexed 254 of 254 issues,
 reported 39 dependency-blocked issues and zero unknown states or request
 failures, and preserved these counts after reload in the main view and Kiosk.
 A narrow graph selection displayed directed cross-project blocking arrows.
@@ -92,8 +136,8 @@ root index.html. Automated fixtures cover three projects, a subgroup epic, an
 external-group child, direct parentage without sibling import, task expansion,
 pagination, limits, legacy fallback, ID separation, invalid responses and
 cancellation races. Live internal-browser testing on localhost against
-example-team/example-group discovered epics through Work Items and loaded a test epic
-(Example epic): five closed issues and one epic, with five
+the configured test group discovered epics through Work Items and loaded a test epic:
+five closed issues and one epic, with five
 contains links. List and graph views, task toggle and clearing were exercised.
 The live example has no external descendants; those are fixture-tested. This
 GitLab schema lacks explicit subgroup-discovery control; the UI reports that
@@ -115,7 +159,7 @@ Scope and Review Status facet filters remain deferred as requested.
 
 Validation: 278 tests passed, one skipped. Production build regenerated both
 dist/index.html and root index.html. Live internal-browser testing against
-example-team/example-group covered a test epic (five closed issues), collapse/expand and
+the configured test group covered a test epic (five closed issues), collapse/expand and
 refresh retention, layer switching, two-hop enrichment, list and graph views,
 full-group search across projects, scope slices, and blocked work (59 issues
 across 12 projects, 39 actively blocked in the loaded snapshot). A title filter
@@ -158,7 +202,7 @@ backoff, cancellation during retry, 403 responses, pagination budgets, corrupt
 caches, revoked access and late scan races.
 
 The rebuilt standalone page was checked in the internal browser at localhost
-against example-team/example-group: index refresh, blocked-work graph, visible-link refresh,
+against the configured test group: index refresh, blocked-work graph, visible-link refresh,
 full scan cancellation/resumption, and cache restoration after reload. The final
 snapshot had 254 indexed issues, 254 fresh relationship observations and 39
 actively blocked issues. The graph remained usable while scanning. Credentials
@@ -168,5 +212,5 @@ dist/index.html.
 Deployment-specific Work Item hierarchy/custom-field availability, permission
 coverage and cross-origin policy still depend on the GitLab installation. The
 existing capability/partial-data warnings remain visible; unsupported hierarchy
-widgets do not imply complete group coverage. Dedicated Scope and Review Status
-facet filters remain deferred at the user's request.
+widgets do not imply complete group coverage. Scope and Review Status were
+deferred at this stage and were added in the review follow-up above.

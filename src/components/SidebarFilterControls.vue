@@ -232,6 +232,62 @@
         </template>
       </v-autocomplete>
 
+      <v-autocomplete
+        v-model="state.filters.selectedReviewStatuses"
+        :items="sortByCount(reviewStatusItems, 'reviewStatuses')"
+        item-title="title"
+        item-value="value"
+        label="Review Status"
+        multiple
+        chips
+        closable-chips
+        clear-on-select
+        density="compact"
+        variant="outlined"
+        :class="['mb-1 compact-input', { 'is-active': isSetArray(state.filters.selectedReviewStatuses) }]"
+        hide-details
+        style="font-size: 12px"
+        prepend-inner-icon="mdi-shape"
+        :menu-props="menuPropsFor(sortByCount(reviewStatusItems, 'reviewStatuses'))"
+      >
+        <template v-slot:item="{ props, item }">
+          <v-list-item v-bind="props" :title="item.title">
+            <template v-slot:prepend>
+              <span class="mr-2 list-icon-wrap" :style="{ color: iconColor(({ icon: 'mdi-tag-outline', color: 'grey' }).color) }"><v-icon :icon="({ icon: 'mdi-tag-outline', color: 'grey' }).icon" size="small"></v-icon></span>
+            </template>
+            <template v-slot:append><span :class="countChipClass(item, 'reviewStatuses')">{{ countOf('reviewStatuses', item) }}</span></template>
+          </v-list-item>
+        </template>
+      </v-autocomplete>
+
+      <v-autocomplete
+        v-model="state.filters.selectedScopes"
+        :items="sortByCount(scopeItems, 'scopes')"
+        item-title="title"
+        item-value="value"
+        label="Scope"
+        multiple
+        chips
+        closable-chips
+        clear-on-select
+        density="compact"
+        variant="outlined"
+        :class="['mb-1 compact-input', { 'is-active': isSetArray(state.filters.selectedScopes) }]"
+        hide-details
+        style="font-size: 12px"
+        prepend-inner-icon="mdi-shape"
+        :menu-props="menuPropsFor(sortByCount(scopeItems, 'scopes'))"
+      >
+        <template v-slot:item="{ props, item }">
+          <v-list-item v-bind="props" :title="item.title">
+            <template v-slot:prepend>
+              <span class="mr-2 list-icon-wrap" :style="{ color: iconColor(({ icon: 'mdi-tag-outline', color: 'grey' }).color) }"><v-icon :icon="({ icon: 'mdi-tag-outline', color: 'grey' }).icon" size="small"></v-icon></span>
+            </template>
+            <template v-slot:append><span :class="countChipClass(item, 'scopes')">{{ countOf('scopes', item) }}</span></template>
+          </v-list-item>
+        </template>
+      </v-autocomplete>
+
       <!-- Status & Subscription -->
       <v-autocomplete
         v-model="state.filters.selectedStatuses"
@@ -674,6 +730,8 @@ const props = defineProps({
   allMilestones: { type: Array, required: true },
   allPriorities: { type: Array, required: true },
   allTypes: { type: Array, required: true },
+  allScopes: { type: Array, default: () => [] },
+  allReviewStatuses: { type: Array, default: () => [] },
   filterCounts: { type: Object, required: false, default: () => ({}) },
 
   dateFilterModes: { type: Array, required: true },
@@ -917,6 +975,8 @@ const priorityItems = computed(() => [
   { title: '(No priority)', value: '@none', ...priorityIconAndColor('@none') },
   ...(props.allPriorities || []).map(v => ({ title: v, value: v, ...priorityIconAndColor(v) }))
 ])
+const scopeItems = computed(() => [{ title: 'No scope', value: '@none' }, ...props.allScopes.map(v => ({ title: v, value: v }))])
+const reviewStatusItems = computed(() => [{ title: 'No review status', value: '@none' }, ...props.allReviewStatuses.map(v => ({ title: v, value: v }))])
 const typeItems = computed(() => [
   { title: '(No type)', value: '@none', ...typeIconAndColor('@none') },
   ...(props.allTypes || []).map(v => ({ title: v, value: v, ...typeIconAndColor(v) }))

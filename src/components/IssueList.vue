@@ -127,7 +127,7 @@
       <template #item.iid="{ item }">
         <span class="il-iid-cell">
           <span class="il-row-color" :style="{ background: item._color }" />
-          <span class="text-medium-emphasis font-weight-medium">{{ item.reference }}</span>
+          <span class="text-medium-emphasis font-weight-medium" :title="item.fullReference">{{ item.reference }}</span>
         </span>
       </template>
 
@@ -397,7 +397,7 @@
 <script setup>
 import { computed, reactive, ref, watch, nextTick } from 'vue'
 import { getScopedLabelValue } from '../utils/scopedLabels'
-import { getIssuePriority } from '../utils/issueFields'
+import { getIssuePriority, getReviewStatusValues } from '../utils/issueFields'
 import { currentStatusOfRaw } from '../composables/useGraphDerivedState'
 import { priorityBucket, PRIORITY_BUCKET_COLOR, PRIORITY_BUCKETS, PRIORITY_BUCKET_LABEL } from '../utils/priorityBucket'
 import {
@@ -408,7 +408,9 @@ import {
 } from '../utils/issueListColumns'
 import IssueContextMenu from './IssueContextMenu.vue'
 
+import { relativeToGroup } from '../utils/relativeToGroup'
 const props = defineProps({
+  selectedGroupPath: { type: String, default: '' },
   nodes: { type: Object, default: () => ({}) },
   issueOpenTarget: { type: String, default: '_blank' },
   // 'open' = single-click opens the ticket (legacy). 'select' = single-click
@@ -982,6 +984,7 @@ const groupKeyFor = (item) => {
     case 'state':     return item.state === 'closed' ? 'Closed' : 'Open'
     case 'status':    return item.status || '(No status)'
     case 'priority':  return item.priority || '(No priority)'
+    case 'reviewStatus': return item.reviewStatus || '(No review status)'
     case 'type':      return item.type || '(No type)'
     case 'milestone': return item.milestone || '(No milestone)'
     case 'author':    return item.author || '(No author)'
@@ -1028,13 +1031,15 @@ const items = computed(() => {
     const item = {
       id,
       iid: raw.iid != null ? String(raw.iid) : id,
-      reference: (n.inSelectedGroup || n.externalContext || n.externalToGroup) ? (n.fullReference || raw.references?.full || `${n.projectPath}#${raw.iid}`) : `#${raw.iid ?? id}`,
+      fullReference: n.fullReference || raw.references?.full || `#${raw.iid ?? id}`,
+      reference: (n.inSelectedGroup || n.externalContext || n.externalToGroup) ? relativeToGroup(n.fullReference || raw.references?.full || `${n.projectPath}#${raw.iid}`, props.selectedGroupPath) : `#${raw.iid ?? id}`,
       sliceContext: !!n.sliceContext,
-      title: (n.sliceContext ? 'Dependency context · ' : '') + (n.externalToGroup ? 'External to group · ' : n.externalContext ? 'External context · ' : '') + (raw.title || n.name || ''),
+      title: (n.sliceContext ? 'Dependency context · ' : '') + (n.outsideSelectedGroup || n.externalToGroup ? 'Outside selected group · ' : n.notInIndex ? 'Not in index · ' : n.externalContext ? 'External context · ' : '') + (raw.title || n.name || ''),
       url: raw.web_url || '',
       state: raw.state || 'opened',
       status: currentStatusOfRaw(raw) || '',
       priority,
+      reviewStatus: getReviewStatusValues(raw).join(', '),
       priorityBucket: priorityBucket(priority),
       type,
       author: raw.author?.name || '',

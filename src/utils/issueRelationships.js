@@ -13,7 +13,7 @@ export function canonicalRelationship(source, target, link) {
 }
 
 // Only actual endpoint data returned by GitLab can create external context.
-export function assembleRelationships(nodes, observations, { maxExternal = 100, maxEdges = 10000, maxHops = 1 } = {}) {
+export function assembleRelationships(nodes, observations, { maxExternal = 100, maxEdges = 10000, maxHops = 1, projectDirectory = {} } = {}) {
   const result = {}, external = {}, canonical = new Set()
   const diagnostics = { missing: 0, unsupported: 0, externalOmitted: 0, edgesOmitted: 0 }
   let frontier = new Set(Object.keys(nodes))
@@ -33,7 +33,8 @@ export function assembleRelationships(nodes, observations, { maxExternal = 100, 
         if (!link.title || !link.project_id || link.iid == null) { diagnostics.missing++; continue }
         if (Object.keys(external).length >= maxExternal) { diagnostics.externalOmitted++; continue }
         const identity = normalizeIssueIdentity(link, { kind: 'project', idOrPath: link.project_id })
-        external[target] = { ...identity, inSelectedGroup: false, externalContext: true,
+        const inGroup = Boolean(projectDirectory[String(link.project_id)])
+        external[target] = { ...identity, inSelectedGroup: inGroup, outsideSelectedGroup: !inGroup, notInIndex: true, readOnly: true, externalContext: true,
           type: 'gitlab_issue', name: 'External context · ' + identity.fullReference + ' ' + link.title,
           color: '#8a8a8a', webUrl: link.web_url, _raw: { ...link, labels: link.labels || [], assignees: link.assignees || [] } }
       }

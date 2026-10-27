@@ -39,6 +39,24 @@ const baseSettings = () => reactive({
 })
 
 describe('useGraphDerivedState', () => {
+  it('combines case-insensitive Scope and custom Review Status facets with OR and missing-value selections', () => {
+    const settings = baseSettings()
+    const nodes = reactive({
+      a: { id: 'a', type: 'gitlab_issue', _raw: { labels: ['sCoPe::API'], custom_field_values: [{ custom_field: { name: 'review STATUS' }, selected_options: [{ value: 'Ready' }] }] } },
+      b: { id: 'b', type: 'gitlab_issue', _raw: { labels: ['Scope::Backend'], custom_field_values: [{ custom_field: { name: 'Review Status' }, selected_options: [{ value: 'Changes requested' }] }] } },
+      c: { id: 'c', type: 'gitlab_issue', _raw: { labels: [] } }
+    })
+    const d = useGraphDerivedState({ settings, nodes, edges: reactive({}) })
+    expect(d.allScopes.value).toEqual(['API', 'Backend'])
+    expect(d.allReviewStatuses.value).toEqual(['Changes requested', 'Ready'])
+    settings.uiState.filters.selectedScopes = ['API', 'Backend']
+    expect(Object.keys(d.filteredNodes.value)).toEqual(['a', 'b'])
+    settings.uiState.filters.selectedReviewStatuses = ['Ready']
+    expect(Object.keys(d.filteredNodes.value)).toEqual(['a'])
+    settings.uiState.filters.selectedScopes = ['@none']
+    settings.uiState.filters.selectedReviewStatuses = ['@none']
+    expect(Object.keys(d.filteredNodes.value)).toEqual(['c'])
+  })
   it('uses custom priorities and mixed-case type labels for options, filtering, and group links', () => {
     const settings = baseSettings()
     const nodes = reactive({

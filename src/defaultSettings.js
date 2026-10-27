@@ -206,6 +206,8 @@ export const defaultSettings = () => ({
       selectedMilestones: [],
       selectedPriorities: [],
       selectedTypes: [],
+      selectedScopes: [],
+      selectedReviewStatuses: [],
       // Explicit iid whitelist. Mainly populated by kiosk deep-clicks on
       // categories that don't map to a clean predicate (e.g. Evergreen).
       // Empty = no constraint. `resetFilters` clears it.

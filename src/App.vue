@@ -27,6 +27,8 @@
       :all-milestones="allMilestones"
       :all-priorities="allPriorities"
       :all-types="allTypes"
+            :all-scopes="allScopes"
+            :all-review-statuses="allReviewStatuses"
       :filter-counts="filterCounts"
       :date-filter-modes="dateFilterModes"
       :grouping-mode-options="groupingModeOptions"
@@ -187,6 +189,7 @@
             ref="issueGraph"
             v-if="hasData && !(tokenExpired && isMockGraph) && settings.uiState.view.layout !== 'list'"
             :nodes="displayNodes"
+            :selected-group-path="explorer.enabled ? explorer.root : ''"
             :edges="displayEdges"
             :color-mode="settings.uiState.view.viewMode"
             :group-by="explorer.enabled && explorer.lanes ? 'project' : settings.uiState.view.groupingMode"
@@ -211,6 +214,7 @@
             v-else-if="hasData && !(tokenExpired && isMockGraph) && settings.uiState.view.layout === 'list'"
             class="flex-grow-1 min-h-0"
             :nodes="displayNodes"
+            :selected-group-path="explorer.enabled ? explorer.root : ''"
             :issue-open-target="settings.uiState.view.issueOpenTarget"
             :row-click-action="settings.uiState.view.listRowClickAction"
             :grouping-mode="settings.uiState.view.groupingMode"
@@ -386,6 +390,8 @@ const resetFilters = () => {
   settings.uiState.filters.selectedMilestones = []
   settings.uiState.filters.selectedPriorities = []
   settings.uiState.filters.selectedTypes = []
+  settings.uiState.filters.selectedScopes = []
+  settings.uiState.filters.selectedReviewStatuses = []
   settings.uiState.filters.selectedIids = []
   settings.uiState.filters.mrMode = null
   settings.uiState.filters.selectedParticipants = []
@@ -543,6 +549,8 @@ const getCurrentConfigSnapshot = () => ({
     milestones: settings.uiState.filters.selectedMilestones,
     priorities: settings.uiState.filters.selectedPriorities,
     types: settings.uiState.filters.selectedTypes,
+    scopes: settings.uiState.filters.selectedScopes,
+    reviewStatuses: settings.uiState.filters.selectedReviewStatuses,
     mrMode: settings.uiState.filters.mrMode,
     participants: settings.uiState.filters.selectedParticipants,
     dueStatus: settings.uiState.filters.dueStatus,
@@ -705,6 +713,8 @@ const groupingModeOptions = computed(() => {
     { title: 'Milestone', value: 'milestone', icon: 'mdi-flag' },
     { title: 'Priority', value: 'priority', icon: 'mdi-alert-circle' },
     { title: 'Type', value: 'type', icon: 'mdi-shape' },
+    { title: 'Scope', value: 'scoped:Scope', icon: 'mdi-tag-outline' },
+    { title: 'Review Status', value: 'reviewStatus', icon: 'mdi-clipboard-check-outline' },
     { title: 'Weight', value: 'weight', icon: 'mdi-weight' },
     { title: 'Epic', value: 'epic', icon: 'mdi-book-open-variant' },
     { title: 'Iteration', value: 'iteration', icon: 'mdi-repeat' },
@@ -744,7 +754,7 @@ const {
   userStateByName,
   allMilestones,
   allPriorities,
-  allTypes,
+  allTypes, allScopes, allReviewStatuses,
   matchesFilters,
   filteredNodes,
   filteredEdges,
@@ -753,7 +763,7 @@ const {
   statsText,
   groupStatsText,
   filterCounts
-} = useGraphDerivedState({ settings, nodes: renderNodes, edges: renderEdges })
+} = useGraphDerivedState({ settings, nodes: renderNodes, edges: renderEdges, facetNodes: nodes })
 
 // Active assignee filter resolved into a concrete name set + flags. Drives multi-assignee
 // clone restriction in IssueGraph so co-assignees not in the filter don't get spawned groups.
@@ -829,7 +839,7 @@ const {
 
 // Keep cached relationship coverage available when opening Kiosk directly.
 const relationships = reactive(useIssueRelationships({
-  config: settings.config, nodes, edges, visibleNodes: filteredNodes, loading, resolveBaseUrl: resolveGitLabApiBaseUrl
+  config: settings.config, nodes, edges, projectDirectory: computed(() => gitlabCacheMeta.value.projects || {}), visibleNodes: filteredNodes, loading, resolveBaseUrl: resolveGitLabApiBaseUrl
 }))
 
 const hierarchy = reactive(useEpicHierarchy({ config: settings.config, nodes, resolveBaseUrl: resolveGitLabApiBaseUrl }))
@@ -842,7 +852,7 @@ const clearSiteData = async () => {
   } catch (e) { error.value = 'Could not clear site data: ' + (e?.message || String(e)) }
 }
 
-const explorer = reactive(useSliceExplorer({ config: settings.config, nodes, edges, hierarchy, relationships, filteredNodes, matchesFilters }))
+const explorer = reactive(useSliceExplorer({ settings, cacheMeta: gitlabCacheMeta, config: settings.config, nodes, edges, hierarchy, relationships, filteredNodes, matchesFilters }))
 const displayNodes = computed(() => explorer.enabled ? explorer.presentation.nodes : filteredNodes.value)
 const displayEdges = computed(() => explorer.enabled ? explorer.presentation.edges : filteredEdges.value)
 watchEffect(() => {
@@ -1123,6 +1133,8 @@ const applyConfiguration = (config) => {
       if (config.filters.assignees) settings.uiState.filters.selectedAssignees = resolveMe(config.filters.assignees)
       if (config.filters.milestones) settings.uiState.filters.selectedMilestones = config.filters.milestones
       if (config.filters.priorities) settings.uiState.filters.selectedPriorities = config.filters.priorities
+      settings.uiState.filters.selectedScopes = config.filters.scopes || []
+      settings.uiState.filters.selectedReviewStatuses = config.filters.reviewStatuses || []
       if (config.filters.types) settings.uiState.filters.selectedTypes = config.filters.types
       if (config.filters.dateFilters) Object.assign(settings.uiState.filters.dateFilters, config.filters.dateFilters)
     }

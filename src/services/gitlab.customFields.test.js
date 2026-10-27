@@ -5,6 +5,20 @@ const customFieldsResponse = (fields) => ({ data: { data: { namespace: {
 } } } })
 
 describe('GitLab custom-field enrichment', () => {
+  it.each(['http', 'graphql'])('splits batches rejected by %s query limits', async mode => {
+    const client = { post: vi.fn(async (_, { variables }) => {
+      if (variables.iid1) {
+        if (mode === 'http') throw Object.assign(new Error('Too complex'), { response: { status: 422 } })
+        return { data: { errors: [{ message: 'Query complexity exceeds limit' }] } }
+      }
+      return customFieldsResponse([{ customField: { name: 'Priority' }, selectedOptions: [{ value: variables.iid0 }] }])
+    }) }
+    const issues = [{ iid: 1 }, { iid: 2 }, { iid: 3 }]
+    await enrichIssueCustomFieldsFromGraphql(client, 'group/project', issues)
+    expect(issues.map(issue => issue.custom_field_values[0].selected_options[0].value)).toEqual(['1', '2', '3'])
+    expect(client.post).toHaveBeenCalledTimes(5)
+  })
+
   it('loads select, text, and number values through work-item widgets', async () => {
     const client = { post: vi.fn().mockResolvedValue(customFieldsResponse([
       { customField: { name: 'Priority' }, selectedOptions: [{ value: 'High' }] },

@@ -3,6 +3,7 @@ import { createHierarchyAdapter } from '../services/gitlabHierarchy'
 import { getGitLabSource, gitlabSourceCacheKey } from '../services/gitlabSourceCache'
 
 export function useEpicHierarchy({ config, nodes, resolveBaseUrl, createAdapter = createHierarchyAdapter }) {
+  const status = ref(''), fullPath = ref('')
   const epics = ref([]), selectedId = ref(null), includeTasks = ref(false)
   const hierarchyNodes = ref({}), hierarchyEdges = ref({})
   const warnings = ref([]), error = ref(''), loading = ref(false), indexReady = ref(false), mode = ref('')
@@ -26,6 +27,8 @@ export function useEpicHierarchy({ config, nodes, resolveBaseUrl, createAdapter 
       adapter = createAdapter(baseUrl, config.token)
       const result = await adapter.listEpics(getGitLabSource(config), controller.signal)
       if (run !== generation) return
+      status.value = result.status || ''
+      fullPath.value = result.fullPath || ''
       epics.value = result.epics
       warnings.value = result.warnings
       mode.value = result.mode
@@ -54,10 +57,10 @@ export function useEpicHierarchy({ config, nodes, resolveBaseUrl, createAdapter 
   watch([selectedId, includeTasks], loadSelection, { flush: 'sync' })
   // Source switches invalidate both requests and all hierarchy state immediately.
   watch(() => [gitlabSourceCacheKey(config), config.token, config.enableGitLab], () => {
-    cancel(); adapter = null; selectedId.value = null; epics.value = []; warnings.value = []; error.value = ''; indexReady.value = false; clearSlice()
-  })
+    cancel(); adapter = null; selectedId.value = null; epics.value = []; warnings.value = []; error.value = ''; indexReady.value = false; clearSlice(); status.value = ''; fullPath.value = ''
+  }, { flush: 'sync' })
   onScopeDispose(cancel)
-  return { enabled, epics, selectedId, includeTasks, hierarchyNodes, hierarchyEdges, warnings, error, loading, indexReady, mode,
+  return { status, fullPath, enabled, epics, selectedId, includeTasks, hierarchyNodes, hierarchyEdges, warnings, error, loading, indexReady, mode,
     refresh, retry: () => selectedId.value ? loadSelection() : refresh(),
     cancel: () => { cancel(); selectedId.value = null; clearSlice() } }
 }
