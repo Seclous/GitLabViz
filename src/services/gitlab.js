@@ -291,11 +291,80 @@ const ensureIssueCaps = async (client, fullPath) => {
   return caps
 }
 
+// Custom fields live on work-item widgets rather than on the Issue GraphQL type.
+// Aliased lookups keep requests bounded while supporting servers without Query.nodes.
+export const enrichIssueCustomFieldsFromGraphql = async (client, projectId, issues, onProgress, options = {}) => {
+  if (!client || client.__glvCustomFieldsUnsupported || !projectId || !Array.isArray(issues) || !issues.length) return issues
+  let fullPath = String(projectId).trim()
+  try {
+    if (/^\d+$/.test(fullPath)) {
+      const project = await gitlabPost(client, '', { data: {
+        query: 'query CustomFieldsProject($id: ID!) { node(id: $id) { ... on Project { fullPath } } }',
+        variables: { id: `gid://gitlab/Project/${fullPath}` }
+      } }, { maxRetries: 1 })
+      fullPath = project?.data?.data?.node?.fullPath
+      if (!fullPath) return issues
+    }
+    const items = issues.filter(i => i?.iid != null)
+    const batchSize = Math.max(1, Math.min(25, Number(options.customFieldsBatchSize) || 25))
+    for (let offset = 0; offset < items.length; offset += batchSize) {
+      const batch = items.slice(offset, offset + batchSize)
+      const variables = { fullPath }
+      const definitions = ['$fullPath: ID!']
+      const lookups = batch.map((issue, index) => {
+        definitions.push(`$iid${index}: String!`)
+        variables[`iid${index}`] = String(issue.iid)
+        return `item${index}: workItem(iid: $iid${index}) {
+          widgets { ... on WorkItemWidgetCustomFields {
+            customFieldValues {
+              customField { name }
+              ... on WorkItemSelectFieldValue { selectedOptions { value } }
+              ... on WorkItemTextFieldValue { textValue: value }
+              ... on WorkItemNumberFieldValue { numberValue: value }
+            }
+          } }
+        }`
+      })
+      onProgress?.(`Enriching custom fields\n${Math.min(offset + batch.length, items.length)} / ${items.length}`)
+      const response = await gitlabPost(client, '', { data: {
+        query: `query EnrichIssueCustomFields(${definitions.join(', ')}) {
+          namespace(fullPath: $fullPath) { ${lookups.join('\n')} }
+        }`,
+        variables
+      } }, { maxRetries: 1 })
+      const payload = response?.data
+      if (payload?.errors?.length) {
+        // Older GitLab versions do not expose custom fields. Leave label fallback intact.
+        client.__glvCustomFieldsUnsupported = payload.errors.some(error =>
+          /undefinedField|undefinedType/.test(error?.extensions?.code || '') ||
+          /doesn't exist|not defined|Unknown type|Cannot query field/i.test(error?.message || ''))
+        return issues
+      }
+      const namespace = payload?.data?.namespace
+      batch.forEach((issue, index) => {
+        const item = namespace?.[`item${index}`]
+        if (!Array.isArray(item?.widgets)) return
+        issue.custom_field_values = item.widgets.flatMap(widget =>
+          (widget?.customFieldValues || []).map(field => ({
+            custom_field: { name: field.customField?.name || '' },
+            ...(Array.isArray(field.selectedOptions)
+              ? { selected_options: field.selectedOptions.map(option => ({ value: option.value })) }
+              : { value: field.textValue ?? field.numberValue ?? null })
+          })))
+      })
+    }
+  } catch (error) {
+    console.warn('[GitLab] custom-field enrichment failed:', error?.message || error)
+  }
+  return issues
+}
+
 export const enrichIssuesFromGraphql = async (client, projectId, issues, onProgress, options = {}) => {
   const fullPath = String(projectId || '').trim()
   if (!client || !fullPath || !Array.isArray(issues) || issues.length === 0) return issues
 
   const caps = await ensureIssueCaps(client, fullPath)
+  await enrichIssueCustomFieldsFromGraphql(client, projectId, issues, onProgress, options)
   const wantEpic = !!caps?.hasEpic
   const wantIteration = !!caps?.hasIteration
   const wantParent = !!caps?.hasParent

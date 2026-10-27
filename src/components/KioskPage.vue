@@ -1291,7 +1291,7 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { Chart } from 'chart.js/auto'
 import { useSettingsStore } from '../composables/useSettingsStore'
 import { HOTKEY_ACTIONS, getEventCombo } from '../composables/useHotkeys'
-import { getAssigneeNames } from '../utils/issueFields'
+import { getAssigneeNames, getIssuePriority } from '../utils/issueFields'
 import { getScopedLabelValue, isScopedLabel } from '../utils/scopedLabels'
 import { priorityBucket, PRIORITY_BUCKETS, PRIORITY_BUCKET_COLOR, PRIORITY_BUCKET_LABEL } from '../utils/priorityBucket'
 import { currentStatusOfRaw } from '../composables/useGraphDerivedState'
@@ -1703,7 +1703,7 @@ const allItems = computed(() => {
     const allowed = new Set(priorityFilter.value)
     list = list.filter(n => {
       if (!isOpen(n)) return true
-      return allowed.has(priorityBucket(getScopedLabelValue(n?._raw?.labels || [], 'Priority')))
+      return allowed.has(priorityBucket(getIssuePriority(n?._raw)))
     })
   }
   if (excludeBacklog.value) {
@@ -1877,7 +1877,7 @@ const workload = computed(() => {
   }
   for (const n of activeOpenItems.value) {
     const raw = n._raw || {}
-    const bucket = priorityBucket(getScopedLabelValue(raw.labels, 'Priority'))
+    const bucket = priorityBucket(getIssuePriority(raw))
     const names = getAssigneeNames(raw)
     if (!names.length) bumpFor('(Unassigned)', bucket)
     else for (const name of names) bumpFor(name, bucket)
@@ -1907,7 +1907,7 @@ const priorityData = computed(() => {
   const showNone = breakdownCfg.value.showNoPriority !== false
   for (const n of activeOpenItems.value) {
     const raw = n._raw || {}
-    const p = getScopedLabelValue(raw.labels, 'Priority') || '(No priority)'
+    const p = getIssuePriority(raw) || '(No priority)'
     if (!showNone && p === '(No priority)') continue
     if (!groups.has(p)) groups.set(p, { label: p, count: 0, oldestDays: 0 })
     const g = groups.get(p)
@@ -2015,7 +2015,7 @@ const hotLabels = computed(() => {
     const cl = safeDate(raw.closed_at) || 0
     if (Math.max(c, u, cl) < cutoff) continue
     activeTickets++
-    const bucket = priorityBucket(getScopedLabelValue(raw.labels, 'Priority'))
+    const bucket = priorityBucket(getIssuePriority(raw))
     const labels = Array.isArray(raw.labels) ? raw.labels : []
     for (const l of labels) {
       if (typeof l !== 'string' || !l) continue
@@ -2187,7 +2187,7 @@ const targetData = computed(() => {
         iid: raw.iid != null ? String(raw.iid) : '',
         title: raw.title || n.name,
         url: raw.web_url || '',
-        priority: getScopedLabelValue(raw.labels, 'Priority') || '',
+        priority: getIssuePriority(raw) || '',
         assignees: getAssigneeNames(raw),
         updatedAt: safeDate(raw.updated_at) || 0
       })
@@ -3275,7 +3275,7 @@ const blockersCfg = computed(() => settings.uiState.kiosk?.modeConfig?.blockers 
 const isBlockerRaw = (raw) => {
   const labels = Array.isArray(raw?.labels) ? raw.labels : []
   if (labels.some(l => typeof l === 'string' && /^(blocker|blocked)$/i.test(l.trim()))) return true
-  if (/blocking|critical/i.test(getScopedLabelValue(labels, 'Priority') || '')) return true
+  if (/blocking|critical/i.test(getIssuePriority(raw) || '')) return true
   if (/critical/i.test(getScopedLabelValue(labels, 'Severity') || '')) return true
   if (/blocked/i.test(currentStatusOfRaw(raw) || '')) return true
   return false
@@ -3298,7 +3298,7 @@ const blockers = computed(() => {
       title: raw.title || n.name,
       url: raw.web_url || '',
       ageDays,
-      priority: getScopedLabelValue(raw.labels, 'Priority') || getScopedLabelValue(raw.labels, 'Severity') || '',
+      priority: getIssuePriority(raw) || getScopedLabelValue(raw.labels, 'Severity') || '',
       assignees: getAssigneeNames(raw),
       updatedAt: safeDate(raw.updated_at) || 0
     })
@@ -3459,7 +3459,7 @@ const risks = computed(() => {
     const due = safeDate(raw.due_date)
     const upd = safeDate(raw.updated_at) || safeDate(raw.created_at) || 0
     const assignees = getAssigneeNames(raw)
-    const priorityVal = getScopedLabelValue(raw.labels, 'Priority') || ''
+    const priorityVal = getIssuePriority(raw) || ''
     const status = currentStatusOfRaw(raw) || ''
 
     const problems = []
@@ -3545,7 +3545,7 @@ const broken = computed(() => {
     const milestoneState = String(m?.state || '').toLowerCase()
     const milestoneStart = safeDate(m?.start_date) || 0
     const assignees = getAssigneeNames(raw)
-    const priorityVal = getScopedLabelValue(raw.labels, 'Priority') || ''
+    const priorityVal = getIssuePriority(raw) || ''
     const priBucket = priorityBucket(priorityVal)
     const typeVal = getScopedLabelValue(raw.labels, 'Type') || ''
     const status = currentStatusOfRaw(raw) || ''
@@ -3658,7 +3658,7 @@ const applyFilter = (patch) => {
     const allowed = new Set(priorityFilter.value)
     const seen = new Set()
     for (const n of allItems.value) {
-      const p = getScopedLabelValue(n?._raw?.labels || [], 'Priority')
+      const p = getIssuePriority(n?._raw)
       if (!p) continue
       if (allowed.has(priorityBucket(p))) seen.add(p)
     }
@@ -3739,7 +3739,7 @@ const filterStatusMismatch = () => {
 const filterCriticalUnowned = () => {
   const seen = new Set()
   for (const n of openItems.value) {
-    const p = getScopedLabelValue(n._raw?.labels || [], 'Priority')
+    const p = getIssuePriority(n._raw)
     if (p && priorityBucket(p) === 'blocking') seen.add(p)
   }
   applyFilter({ selectedPriorities: [...seen], selectedAssignees: ['@unassigned'] })

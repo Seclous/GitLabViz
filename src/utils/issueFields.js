@@ -1,3 +1,5 @@
+import { getScopedLabelValues } from './scopedLabels'
+
 // Multi-assignee aware: GitLab issues expose `assignees` (array, source of truth)
 // and `assignee` (deprecated singular, often == assignees[0] but may be null on multi-assignee).
 export function getAssigneeNames (raw) {
@@ -37,4 +39,26 @@ export function filterAssigneeKeys (keys, filter) {
   if (!filter) return keys
   const out = keys.filter(k => k === 'Unassigned' ? filter.wantsUnassigned : filter.names.has(k))
   return out.length ? out : keys
+}
+// A populated custom field takes precedence over the legacy scoped label.
+export function getIssuePriorityValues (raw) {
+  const values = []
+  for (const field of raw?.custom_field_values || []) {
+    if (String(field?.custom_field?.name || '').trim().toLowerCase() !== 'priority') continue
+    const selected = field.selected_options
+    const candidates = Array.isArray(selected) && selected.length
+      ? selected.map(option => option?.value)
+      : [field.value]
+    for (const value of candidates) {
+      if (typeof value !== 'string' && typeof value !== 'number') continue
+      const text = String(value).trim()
+      if (text && !values.includes(text)) values.push(text)
+    }
+  }
+  return values.length ? values : getScopedLabelValues(raw?.labels, 'Priority')
+}
+
+export function getIssuePriority (raw) {
+  const values = getIssuePriorityValues(raw)
+  return values.length ? values[values.length - 1] : null
 }

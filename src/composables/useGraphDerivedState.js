@@ -1,6 +1,6 @@
 import { computed, watch } from 'vue'
 import { getScopedLabelValue, getScopedLabelValues, isScopedLabel } from '../utils/scopedLabels'
-import { getAssigneeNames, resolveAssigneeFilter, filterAssigneeKeys } from '../utils/issueFields'
+import { getAssigneeNames, resolveAssigneeFilter, filterAssigneeKeys, getIssuePriority, getIssuePriorityValues } from '../utils/issueFields'
 
 // Single source of truth for an issue's effective status — used by the dropdown
 // derivation, the filter, and the graph so they never disagree. Returns the raw value
@@ -123,7 +123,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
   const allPriorities = computed(() => {
     const priorities = new Set()
     Object.values(nodes).forEach(node => {
-      const p = getScopedLabelValue(node._raw.labels, 'Priority')
+      const p = getIssuePriority(node._raw)
       if (p) priorities.add(p)
     })
     return Array.from(priorities).sort()
@@ -162,7 +162,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
       }],
       ['participants', new Set(['participants']), (r) => (r.participants || []).forEach(p => inc(buckets.participants, p?.name || p?.username))],
       ['milestones', new Set(['milestones']), (r) => inc(buckets.milestones, r.milestone?.title || '@none')],
-      ['priorities', new Set(['priorities']), (r) => inc(buckets.priorities, getScopedLabelValue(r.labels, 'Priority') || '@none')],
+      ['priorities', new Set(['priorities']), (r) => inc(buckets.priorities, getIssuePriority(r) || '@none')],
       ['types', new Set(['types']), (r) => inc(buckets.types, getScopedLabelValue(r.labels, 'Type') || '@none')],
       ['subscription', new Set(['subscription']), (r) => inc(buckets.subscription, r.subscribed ? 'subscribed' : 'unsubscribed')],
       ['mr', new Set(['mr']), (r, n) => inc(buckets.mr, (Number(n?.mergeRequestsCount) || 0) > 0 ? 'has' : 'none')],
@@ -308,7 +308,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
       const want = f.selectedPriorities
       const wantsNone = want.includes('@none')
       const wantNames = want.filter(v => v !== '@none')
-      const priority = getScopedLabelValue(nodeLabels, 'Priority')
+      const priority = getIssuePriority(node._raw)
       if (!((!!priority && wantNames.includes(priority)) || (wantsNone && !priority))) return false
     }
 
@@ -523,7 +523,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
             keys = cloneMultiAssignee ? allowed : [allowed[0]]
           }
           else if (groupingMode === 'milestone') keys = [n.milestone ? n.milestone.title : 'No Milestone']
-          else if (groupingMode === 'priority') keys = [getScopedLabelValue(n.labels, 'Priority') || 'No Priority']
+          else if (groupingMode === 'priority') keys = [getIssuePriority(n) || 'No Priority']
           else if (groupingMode === 'type') keys = [getScopedLabelValue(n.labels, 'Type') || 'No Type']
           else if (groupingMode === 'epic') {
             const parentType = String(n.parent?.work_item_type || '').trim().toLowerCase()
@@ -638,7 +638,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
         const statusKeys = getScopedLabelValues(labels, 'Status')
         keys = statusKeys.length ? statusKeys : [String(raw.state || '').toLowerCase() === 'closed' ? 'Done' : 'To do']
       } else if (mode === 'priority') {
-        const ks = getScopedLabelValues(labels, 'Priority')
+        const ks = getIssuePriorityValues(raw)
         keys = ks.length ? ks : ['No Priority']
       } else if (mode === 'type') {
         const ks = getScopedLabelValues(labels, 'Type')

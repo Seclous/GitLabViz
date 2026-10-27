@@ -168,7 +168,8 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import * as d3 from 'd3'
 import { useSettingsStore } from '../composables/useSettingsStore'
-import { getAssigneeNames } from '../utils/issueFields'
+import { getAssigneeNames, getIssuePriority } from '../utils/issueFields'
+import { getScopedLabelValue } from '../utils/scopedLabels'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -262,13 +263,10 @@ const assignDisabledReason = computed(() => {
 })
 const ctxMilestone = computed(() => raw.value?.milestone?.title || '')
 const scopedFirst = (prefix) => {
-  const labels = raw.value?.labels || []
-  if (!Array.isArray(labels)) return ''
-  const matches = labels.filter(l => typeof l === 'string' && l.startsWith(prefix + '::')).map(l => l.substring(prefix.length + 2)).filter(Boolean)
-  return matches.length ? matches[matches.length - 1] : ''
+  return getScopedLabelValue(raw.value?.labels, prefix) || ''
 }
 const ctxStatus = computed(() => scopedFirst('Status'))
-const ctxPriority = computed(() => scopedFirst('Priority'))
+const ctxPriority = computed(() => getIssuePriority(raw.value))
 const ctxType = computed(() => scopedFirst('Type'))
 const ctxLabels = computed(() => {
   const labels = raw.value?.labels || []

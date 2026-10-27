@@ -40,6 +40,19 @@ const mountList = (props = {}) => mount(IssueList, {
 })
 
 describe('IssueList — items mapping', () => {
+  it('displays and groups custom priorities and recognizes mixed-case type labels', () => {
+    const w = mountList({
+      groupingMode: 'priority',
+      nodes: { '1': mkNode('1', {
+        iid: 1,
+        labels: ['Priority::Low', 'tYpE::Bug'],
+        custom_field_values: [{ custom_field: { name: 'priority' }, selected_options: [{ value: 'High' }] }]
+      }) }
+    })
+    expect(w.vm.items[0]).toMatchObject({ priority: 'High', type: 'Bug', _group: 'High' })
+    w.unmount()
+  })
+
   it('skips non-gitlab nodes and maps raw fields onto items', () => {
     const nodes = {
       '1': mkNode('1', {

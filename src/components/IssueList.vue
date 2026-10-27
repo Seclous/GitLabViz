@@ -397,6 +397,7 @@
 <script setup>
 import { computed, reactive, ref, watch, nextTick } from 'vue'
 import { getScopedLabelValue } from '../utils/scopedLabels'
+import { getIssuePriority } from '../utils/issueFields'
 import { currentStatusOfRaw } from '../composables/useGraphDerivedState'
 import { priorityBucket, PRIORITY_BUCKET_COLOR, PRIORITY_BUCKETS, PRIORITY_BUCKET_LABEL } from '../utils/priorityBucket'
 import {
@@ -1006,7 +1007,7 @@ const items = computed(() => {
     const n = props.nodes[id]
     if (!n || n.type !== 'gitlab_issue') continue
     const raw = n._raw || {}
-    const priority = getScopedLabelValue(raw.labels, 'Priority') || ''
+    const priority = getIssuePriority(raw) || ''
     const type     = getScopedLabelValue(raw.labels, 'Type') || ''
     const dueIso = raw.due_date || ''
     const dueMs = dueIso ? new Date(dueIso).getTime() : 0

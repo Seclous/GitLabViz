@@ -33,9 +33,14 @@ vi.mock('../chatTools/mmClient', () => ({
   }))
 }))
 
-import { useDataLoader } from './useDataLoader'
+import { useDataLoader, slimIssue } from './useDataLoader'
 
 describe('useDataLoader', () => {
+  it('retains custom-field values when slimming issues for the cache', () => {
+    const custom_field_values = [{ custom_field: { name: 'Priority' }, selected_options: [{ value: 'High' }] }]
+    expect(slimIssue({ iid: 1, custom_field_values }).custom_field_values).toEqual(custom_field_values)
+  })
+
   it('initCachedData loads cached nodes/edges but filters out svn nodes', async () => {
     await localforage.clear()
     await localforage.setItem('gitlab_nodes', {
@@ -300,6 +305,12 @@ describe('useDataLoader', () => {
 
   it('loadData (gitlab incremental) syncs closed transitions (keeps and updates cached issues even when gitlabClosedDays=0)', async () => {
     const gitlab = await import('../services/gitlab')
+    gitlab.createGitLabGraphqlClient.mockReturnValueOnce({})
+    gitlab.enrichIssuesFromGraphql.mockImplementationOnce(async (_client, _project, issues) => {
+      for (const issue of issues) {
+        issue.custom_field_values = [{ custom_field: { name: 'Priority' }, selected_options: [{ value: 'High' }] }]
+      }
+    })
 
     const closedIssue = {
       iid: 1,
@@ -338,7 +349,10 @@ describe('useDataLoader', () => {
         gitlabClosedDays: 0
       }
     })
-    const nodes = reactive({ '1': { id: '1', type: 'gitlab_issue', _raw: { state: 'opened' } } })
+    const nodes = reactive({
+      '1': { id: '1', type: 'gitlab_issue', _raw: { iid: 1, state: 'opened' } },
+      '2': { id: '2', type: 'gitlab_issue', _raw: { iid: 2, state: 'opened' } }
+    })
     const edges = reactive({ '1-2': { source: '1', target: '2' }, 'svn-1-1': { source: 'svn-1', target: '1' } })
     const issueGraphSnapshot = reactive({ nodes: {}, edges: {} })
     const svnUrl = ref('')
@@ -389,6 +403,9 @@ describe('useDataLoader', () => {
     // cached issues are kept and updated (gitlabClosedDays does not block updates)
     expect(nodes['1']).toBeTruthy()
     expect(nodes['1']?.closedAt).toBeTruthy()
+    // Unchanged issues from old caches also gain custom fields on a normal refresh.
+    expect(nodes['1']._raw.custom_field_values[0].selected_options[0].value).toBe('High')
+    expect(nodes['2']._raw.custom_field_values[0].selected_options[0].value).toBe('High')
     // issue-link edges touching updated issues are cleared for re-linking
     expect(Object.keys(edges).some(k => k.includes('1-2'))).toBe(false)
     // but non-issue edges (e.g. SVN) remain

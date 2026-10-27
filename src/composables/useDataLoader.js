@@ -40,6 +40,7 @@ const slimIssue = (i) => {
     due_date: i.due_date,
     user_notes_count: i.user_notes_count,
     labels: i.labels,
+    custom_field_values: i.custom_field_values,
     weight: i.weight,
     epic_iid: i.epic_iid,
     status_display: i.status_display,
@@ -467,7 +468,14 @@ export function useDataLoader ({
 
           // Optional GraphQL enrichment pass for fields REST doesn't provide (kept minimal).
           if (gqlClient) {
-            await enrichIssuesFromGraphql(gqlClient, settings.config.projectId, issues, (msg) => {
+            // Backfill custom fields for unchanged issues from caches written before
+            // custom-field support, without requiring a full REST sync.
+            const fetchedIids = new Set(issues.map(i => String(i.iid)))
+            const enrichmentIssues = [...issues, ...Object.values(nodes)
+              .filter(n => !replaceGitLabDataOnSuccess && n?.type === 'gitlab_issue' && n._raw?.iid != null &&
+                !fetchedIids.has(String(n._raw.iid)) && n._raw.custom_field_values == null)
+              .map(n => n._raw)]
+            await enrichIssuesFromGraphql(gqlClient, settings.config.projectId, enrichmentIssues, (msg) => {
               loadingMessage.value = msg
               updateStatus.value = { loading: true, source: 'gitlab', message: msg }
             })

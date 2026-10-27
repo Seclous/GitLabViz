@@ -47,7 +47,6 @@ export default defineConfig(({ mode }) => {
 
   const gitCommit = safeExec('git rev-parse --short HEAD')
   const gitBranch = safeExec('git rev-parse --abbrev-ref HEAD')
-  const gitRepo = safeExec('git config --get remote.origin.url')
   const gitDirty = !!safeExec('git status --porcelain')
 
   // GitHub Actions metadata (only present on runners)
@@ -99,7 +98,7 @@ export default defineConfig(({ mode }) => {
       '__BUILD_TIME__': JSON.stringify(buildTime),
       '__GIT_COMMIT__': JSON.stringify(gitCommit || ''),
       '__GIT_BRANCH__': JSON.stringify(gitBranch || ''),
-      '__GIT_REPO__': JSON.stringify(gitRepo || ''),
+      '__GIT_REPO__': JSON.stringify(''),
       '__GIT_DIRTY__': JSON.stringify(gitDirty),
       '__CI_PROVIDER__': JSON.stringify(isGitHubActions ? 'github' : ''),
       '__GITHUB_REPOSITORY__': JSON.stringify(ghRepo),

@@ -39,6 +39,28 @@ const baseSettings = () => reactive({
 })
 
 describe('useGraphDerivedState', () => {
+  it('uses custom priorities and mixed-case type labels for options, filtering, and group links', () => {
+    const settings = baseSettings()
+    const nodes = reactive({
+      '1': { id: '1', type: 'gitlab_issue', _raw: {
+        labels: ['Priority::Low', 'type::Bug'],
+        custom_field_values: [{ custom_field: { name: 'priority' }, selected_options: [{ value: 'High' }] }]
+      } },
+      '2': { id: '2', type: 'gitlab_issue', _raw: { labels: ['PRIORITY:High', 'TYPE::Feature'] } }
+    })
+    const d = useGraphDerivedState({ settings, nodes, edges: reactive({}) })
+    expect(d.allPriorities.value).toEqual(['High'])
+    expect(d.allTypes.value).toEqual(['Bug', 'Feature'])
+    settings.uiState.view.linkMode = 'group'
+    settings.uiState.view.groupingMode = 'priority'
+    expect(Object.keys(d.filteredEdges.value).some(k => k.includes('group-1-2'))).toBe(true)
+    settings.uiState.filters.selectedPriorities = ['Low']
+    expect(Object.keys(d.filteredNodes.value)).toEqual([])
+    settings.uiState.filters.selectedPriorities = ['High']
+    settings.uiState.filters.selectedTypes = ['Bug']
+    expect(Object.keys(d.filteredNodes.value)).toEqual(['1'])
+  })
+
   it('returns nodes directly when filters are effectively off', () => {
     const settings = baseSettings()
     const nodes = reactive({

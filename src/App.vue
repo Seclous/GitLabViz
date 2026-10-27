@@ -708,7 +708,7 @@ const groupingModeOptions = computed(() => {
 
   const scoped = Array.from(scopedPrefixes)
     .sort()
-    .filter(p => p && !['Priority', 'Type'].includes(p))
+    .filter(p => p && !['priority', 'type'].includes(p.toLowerCase()))
     .map(p => ({
       title: p === 'Status' ? 'Status (Label)' : `${p} (Label)`,
       value: `scoped:${p}`,

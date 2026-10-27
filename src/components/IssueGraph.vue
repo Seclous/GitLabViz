@@ -116,7 +116,7 @@ import { ref, computed, onMounted, onUnmounted, watch, toRaw } from 'vue'
 import * as d3 from 'd3'
 import { useSettingsStore } from '../composables/useSettingsStore'
 import { getScopedLabelValue, getScopedLabelValues, isScopedLabel } from '../utils/scopedLabels'
-import { getAssigneeNames, filterAssigneeKeys } from '../utils/issueFields'
+import { getAssigneeNames, filterAssigneeKeys, getIssuePriority, getIssuePriorityValues } from '../utils/issueFields'
 import { currentStatusOfRaw } from '../composables/useGraphDerivedState'
 import IssueContextMenu from './IssueContextMenu.vue'
 
@@ -1086,7 +1086,7 @@ function updateGraph() {
       const statusKeys = getScopedLabelValues(labels, 'Status')
       groupKeys = statusKeys.length ? statusKeys : [currentStatusOfRaw(raw)]
     } else if (groupBy === 'priority') {
-      const keys = getScopedLabelValues(labels, 'Priority')
+      const keys = getIssuePriorityValues(raw)
       groupKeys = keys.length ? keys : ['No Priority']
     } else if (groupBy === 'type') {
       const keys = getScopedLabelValues(labels, 'Type')
@@ -1168,7 +1168,7 @@ function updateGraph() {
       // GitLab fields populated by GraphQL enrichment) over the legacy `Status::` scoped
       // label. Closed issues without an explicit status fall back to "Done".
       node.statusLabel = currentStatusOfRaw(raw)
-      node.priority = getScopedLabelValue(labels, 'Priority') || 'No Priority'
+      node.priority = getIssuePriority(raw) || 'No Priority'
       node.type = getScopedLabelValue(labels, 'Type') || 'No Type'
       node.weight = raw.weight != null ? String(raw.weight) : 'No Weight'
       // Epic can come from:
@@ -2523,7 +2523,7 @@ function render() {
              ctx.textBaseline = 'middle'
              
              labels.forEach(label => {
-                 if (label.startsWith('Priority') || label.startsWith('Type')) return 
+                 if (/^(priority|type):/i.test(label)) return
                  
                  const labelWidth = ctx.measureText(label).width + 6
                  if (tagX + labelWidth > x + w - 15) {
