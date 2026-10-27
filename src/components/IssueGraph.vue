@@ -129,6 +129,7 @@ const props = defineProps({
   nodes: Object,
   edges: Object,
   colorMode: { type: String, default: 'state' }, // 'state' | 'tag' | 'author'
+  projectLanes: { type: Boolean, default: false },
   groupBy: { type: String, default: 'none' }, // 'none' | 'tag' | 'author' | 'state' | 'scoped:<Prefix>'
   linkMode: { type: String, default: 'dependency' }, // 'none' | 'dependency' | 'group'
   hideUnlinked: { type: Boolean, default: false },
@@ -238,6 +239,7 @@ const isDarkTheme = computed(() => themeName.value === 'dark')
 
 const getDepLinkStyle = (raw, fallback) => {
   const t = String(raw || '').toLowerCase()
+  if (t === 'contains') return { color: isDarkTheme.value ? 'rgba(80, 210, 190, 0.92)' : 'rgba(0, 121, 107, 0.92)', arrow: true, label: 'Contains' }
   if (t.includes('block')) return { color: isDarkTheme.value ? 'rgba(255, 140, 90, 0.92)' : 'rgba(230, 120, 60, 0.92)', arrow: true, label: 'Blocks' }
   if (t.includes('depend')) return { color: isDarkTheme.value ? 'rgba(110, 190, 255, 0.92)' : 'rgba(30, 136, 229, 0.92)', arrow: true, label: 'Depends on' }
   if (t.includes('reference')) return { color: isDarkTheme.value ? 'rgba(186, 140, 255, 0.9)' : 'rgba(124, 77, 255, 0.9)', arrow: true, label: 'Referenced' }
@@ -252,7 +254,8 @@ const linkLegendItems = computed(() => {
     getDepLinkStyle('blocks', fallback),
     getDepLinkStyle('depends', fallback),
     getDepLinkStyle('relates', fallback),
-    getDepLinkStyle('referenced', fallback)
+    getDepLinkStyle('referenced', fallback),
+    ...(Object.values(props.edges).some(e => e.kind === 'contains') ? [getDepLinkStyle('contains', fallback)] : [])
   ]
 })
 
@@ -597,7 +600,7 @@ onUnmounted(() => {
   if (saveTimeout) { clearTimeout(saveTimeout); saveTimeout = null }
 })
 
-watch(() => [props.nodes, props.edges, props.colorMode, props.groupBy, props.linkMode, props.hideUnlinked, props.repulsion, props.friction, props.groupGravity, props.linkStrength, props.linkDistance, props.centerGravity, props.gridStrength, props.gridSpacing, props.cloneMultiAssignee, props.assigneeFilter], () => {
+watch(() => [props.nodes, props.edges, props.projectLanes, props.colorMode, props.groupBy, props.linkMode, props.hideUnlinked, props.repulsion, props.friction, props.groupGravity, props.linkStrength, props.linkDistance, props.centerGravity, props.gridStrength, props.gridSpacing, props.cloneMultiAssignee, props.assigneeFilter], () => {
   updateGraph()
 }, { deep: true })
 
@@ -804,6 +807,7 @@ function resizeCanvas() {
 
 // Data refs needed for rendering loop
 let nodesData = []
+const positionCache = new Map()
 let edgesData = []
 let lastGroupBy = null
 let dataOnlyUpdateOnce = false
@@ -830,7 +834,12 @@ function updateGraph() {
 
   // Preserve previous positions/physics by id so "data refresh" (ex: context menu edits)
   // doesn't reset the graph layout.
-  const prevById = new Map(nodesData.map(n => [String(n.id), n]))
+  for (const n of nodesData) {
+    positionCache.delete(String(n.id))
+    positionCache.set(String(n.id), n)
+  }
+  while (positionCache.size > 2000) positionCache.delete(positionCache.keys().next().value)
+  const prevById = positionCache
 
   const getWeekYear = (dateStr) => {
     if (!dateStr) return 'No Date'
@@ -1436,6 +1445,7 @@ function updateGraph() {
     // Determine group key for each node
     nodesData.forEach(d => {
         if (groupBy === 'tag') d._groupKey = d.tag
+        else if (groupBy === 'project') d._groupKey = d.projectPath || d.namespacePath || 'Epic hierarchy'
         else if (groupBy === 'author') d._groupKey = d.authorName
         else if (groupBy === 'state') {
           // "Status" grouping: prefer Status scoped label, fallback to a simple state bucket.
@@ -1633,7 +1643,14 @@ function updateGraph() {
     .velocityDecay(props.friction) // High friction to prevent jitter
 
       // Apply Forces based on mode
-      if (isSvnRevisionMode) {
+      if (props.projectLanes) {
+          const projects = [...new Set(nodesData.map(n => n._groupKey))].sort()
+          const spacing = CAPSULE_WIDTH * 1.6
+          const laneX = key => (projects.indexOf(key) - (projects.length - 1) / 2) * spacing
+          projects.forEach(key => { groupCenters[key] = { x: laneX(key), y: 0 } })
+          simulation.force('x', d3.forceX(d => laneX(d._groupKey)).strength(0.85))
+            .force('y', d3.forceY(0).strength(0.025))
+      } else if (isSvnRevisionMode) {
           // Keep it on a horizontal timeline
           const strength = Math.max(0.1, props.groupGravity * 3)
           simulation
@@ -2245,6 +2262,7 @@ function render() {
   const isVeryFarZoom = k < 0.08
 
   nodesData.forEach(node => {
+    ctx.filter = node.sliceContext ? 'opacity(0.45)' : 'none'
     const x = node.x - w/2
     const y = node.y - h/2
 
@@ -2389,7 +2407,7 @@ function render() {
         ctx.textAlign = 'left'
         
         // Check for JIRA ID in title
-        let displayId = node.inSelectedGroup ? node.fullReference : `#${node._raw?.iid ?? node.iid ?? node.id}`
+        let displayId = (node.inSelectedGroup || node.externalToGroup) ? node.fullReference : `#${node._raw?.iid ?? node.iid ?? node.id}`
         let displayTitle = node._raw.title || node.name || 'Untitled'
         let jiraId = null
         const titleText = node._raw.title || ''
@@ -2400,6 +2418,7 @@ function render() {
             displayTitle = jiraMatch[2]
         }
         
+        if (node.externalToGroup) displayTitle = 'External to group · ' + displayTitle
         ctx.fillText(displayId, x + 15, headerY)
         
         if (jiraId) {
@@ -2493,7 +2512,7 @@ function render() {
         ctx.textBaseline = 'middle'
 
         // -- Author (Bottom) --
-        const authorName = node._raw.author ? node._raw.author.name : 'Unknown'
+        const authorName = node.sliceContext ? 'Dependency context' : (node._raw.author ? node._raw.author.name : 'Unknown')
         ctx.fillStyle = c.textMuted
         ctx.font = metaFont
         ctx.textAlign = 'left'
@@ -2551,6 +2570,7 @@ function render() {
     ctx.restore()
   })
 
+  ctx.filter = 'none'
   // Dependency links on top when zoomed out (better readability)
   if (props.linkMode === 'dependency' && transform.k < 0.55) {
     const arrowPx = 10

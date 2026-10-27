@@ -109,4 +109,18 @@ describe('IssueGraph.vue', () => {
     // Since we use D3 to append, we check DOM
     // expect(wrapper.element.querySelectorAll('.node-capsule').length).toBe(1);
   });
+
+  it('supports graph controls and slice replacement with 200 nodes and 400 edges', async () => {
+    const nodes = Object.fromEntries(Array.from({ length: 200 }, (_, i) => [String(i), { ...mockNodes['1'], id: String(i), name: 'Issue ' + i, x: i % 20 * 100, y: Math.floor(i / 20) * 80 }]));
+    const edges = Object.fromEntries(Array.from({ length: 400 }, (_, i) => [String(i), { id: String(i), source: String(i % 200), target: String((i + 1 + Math.floor(i / 200)) % 200), kind: 'blocks' }]));
+    const wrapper = mount(IssueGraph, { props: { nodes, edges }, ...mountOpts });
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('canvas').exists()).toBe(true);
+    expect(() => wrapper.vm.fitToScreen()).not.toThrow();
+    expect(() => wrapper.vm.resetZoom()).not.toThrow();
+    await wrapper.setProps({ nodes: mockNodes, edges: mockEdges });
+    expect(wrapper.find('.graph-container').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
 });

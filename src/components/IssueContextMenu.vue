@@ -205,12 +205,13 @@ const ctxIid = computed(() => {
   return n && n.id != null ? String(n.id) : ''
 })
 
-const canWrite = computed(() => !!settings?.meta?.gitlabCanWrite)
+const canWrite = computed(() => !!settings?.meta?.gitlabCanWrite && !props.node?.hierarchyReadOnly)
 const meId = computed(() => {
   const n = Number(settings?.meta?.gitlabMeId)
   return Number.isFinite(n) && n > 0 ? n : null
 })
 const writeDisabledReason = computed(() => {
+  if (props.node?.hierarchyReadOnly) return 'Hierarchy context is read-only.'
   if (canWrite.value) return ''
   const scopes = settings?.meta?.gitlabTokenScopes
   if (Array.isArray(scopes) && scopes.length) return `Read-only token (scopes: ${scopes.join(', ')}). Create a token with api scope to enable editing.`

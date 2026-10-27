@@ -1028,8 +1028,9 @@ const items = computed(() => {
     const item = {
       id,
       iid: raw.iid != null ? String(raw.iid) : id,
-      reference: (n.inSelectedGroup || n.externalContext) ? (n.fullReference || raw.references?.full || `${n.projectPath}#${raw.iid}`) : `#${raw.iid ?? id}`,
-      title: (n.externalContext ? 'External context · ' : '') + (raw.title || n.name || ''),
+      reference: (n.inSelectedGroup || n.externalContext || n.externalToGroup) ? (n.fullReference || raw.references?.full || `${n.projectPath}#${raw.iid}`) : `#${raw.iid ?? id}`,
+      sliceContext: !!n.sliceContext,
+      title: (n.sliceContext ? 'Dependency context · ' : '') + (n.externalToGroup ? 'External to group · ' : n.externalContext ? 'External context · ' : '') + (raw.title || n.name || ''),
       url: raw.web_url || '',
       state: raw.state || 'opened',
       status: currentStatusOfRaw(raw) || '',
@@ -1096,7 +1097,7 @@ const toggleLegendPin = (color) => {
 // colour doesn't force Vuetify to re-render all rows. The match/dim classes
 // are toggled directly on the DOM by the watcher below. The ctx-active
 // class is also DOM-toggled (in onRowContextMenu / close) to avoid re-rendering.
-const rowProps = ({ item }) => ({ 'data-row-color': item._color || '', 'data-row-id': item.id })
+const rowProps = ({ item }) => ({ class: item.sliceContext ? 'il-slice-context' : '', title: item.sliceContext ? 'Dependency context' : '', 'data-row-color': item._color || '', 'data-row-id': item.id })
 const issueListEl = ref(null)
 const applyLegendClasses = () => {
   const root = issueListEl.value
@@ -1614,3 +1615,5 @@ const markAvatarBroken = (url) => {
 :deep(.v-data-table-footer .v-select) { max-width: 80px; }
 :deep(.v-data-table-footer__info) { padding: 0 8px !important; }
 </style>
+
+<style scoped> :deep(tr.il-slice-context) { opacity: 0.5; } </style>

@@ -18,6 +18,17 @@ function setup(count = 2) {
 beforeEach(() => { vi.clearAllMocks(); fetchIssueLinks.mockResolvedValue([]); localforage.getItem.mockResolvedValue(null) })
 afterEach(() => wrapper?.unmount())
 describe('bounded relationship indexing', () => {
+  it('does not cancel a pending cache restore when no scan is running', async () => {
+    let restore;
+    localforage.getItem.mockImplementationOnce(() => new Promise(resolve => { restore = resolve }));
+    const ctx = setup();
+    ctx.api.cancel();
+    restore({ observations: { 'issue:0': { at: Date.now(), links: [] } }, errors: {} });
+    await flushPromises();
+    expect(ctx.api.freshCount.value).toBe(1);
+    await ctx.api.scan({ full: true });
+    expect(fetchIssueLinks).toHaveBeenCalledTimes(1);
+  });
   it('routes by each issue project and IID, caches fresh scans, and refresh removes deleted links', async () => {
     const ctx = setup(); await flushPromises()
     fetchIssueLinks.mockImplementation(async (_, pid) => pid === 10 ? [{ id: 1, project_id: 11, iid: 7, link_type: 'blocks' }] : [])
@@ -82,4 +93,35 @@ describe('bounded relationship indexing', () => {
     expect(ctx.api.freshCount.value).toBe(2)
   })
 
+})
+
+it('ignores an older cancelled scan after a new same-source scan completes', async () => {
+  const ctx = setup(1); await flushPromises()
+  let release
+  fetchIssueLinks.mockImplementationOnce(() => new Promise(resolve => { release = resolve }))
+  const oldScan = ctx.api.scan({ full: true, force: true })
+  await flushPromises(); ctx.api.cancel()
+  fetchIssueLinks.mockResolvedValue([])
+  await ctx.api.scan({ full: true, force: true })
+  const writes = localforage.setItem.mock.calls.length
+  release([{ id: 999, project_id: 99, iid: 1, title: 'Old context', link_type: 'blocks' }])
+  await oldScan
+  expect(localforage.setItem).toHaveBeenCalledTimes(writes)
+  expect(Object.values(ctx.nodes).some(n => n.externalContext)).toBe(false)
+  expect(ctx.api.observations.value['issue:0'].links).toEqual([])
+})
+it('drops a cached successful observation when access is revoked', async () => {
+  const ctx = setup(1); await flushPromises()
+  await ctx.api.scan({ full: true })
+  expect(ctx.api.freshCount.value).toBe(1)
+  fetchIssueLinks.mockRejectedValueOnce({ response: { status: 403 } })
+  await ctx.api.scan({ full: true, force: true })
+  expect(ctx.api.observations.value['issue:0']).toBeUndefined()
+  expect(ctx.api.freshCount.value).toBe(0)
+  expect(ctx.api.errors.value['issue:0']).toBe('HTTP 403')
+})
+it('discards malformed cached relationship observations', async () => {
+  localforage.getItem.mockResolvedValueOnce({ observations: { bad: { at: 1, links: {} }, good: { at: Date.now(), links: [] } } })
+  const ctx = setup(1); await flushPromises()
+  expect(Object.keys(ctx.api.observations.value)).toEqual(['good'])
 })

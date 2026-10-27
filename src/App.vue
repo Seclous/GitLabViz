@@ -116,6 +116,7 @@
         @save="handleConfigSave"
         @tab-change="configInitialTab = $event || 'gitlab'"
         @clear-data="clearData"
+        @clear-site-data="clearSiteData"
         @update-source="handleUpdateSource"
         @clear-source="handleClearSource"
         @open-kiosk="enterKiosk"
@@ -176,6 +177,7 @@
           </v-btn>
         </div>
         
+          <SliceExplorer :explorer="explorer" :hierarchy="hierarchy" :relationships="relationships" :source="settings.config.groupId || 'Group'" :loading="loading" />
           <RelationshipStatus :config="settings.config" :relationships="relationships" :loading="loading" />
 
           <!-- Graph and list share `filteredNodes` so switching between them
@@ -184,12 +186,13 @@
           <IssueGraph
             ref="issueGraph"
             v-if="hasData && !(tokenExpired && isMockGraph) && settings.uiState.view.layout !== 'list'"
-            :nodes="filteredNodes"
-            :edges="filteredEdges"
+            :nodes="displayNodes"
+            :edges="displayEdges"
             :color-mode="settings.uiState.view.viewMode"
-            :group-by="settings.uiState.view.groupingMode"
-            :link-mode="settings.uiState.view.linkMode"
-            :hide-unlinked="settings.uiState.view.hideUnlinked"
+            :group-by="explorer.enabled && explorer.lanes ? 'project' : settings.uiState.view.groupingMode"
+          :project-lanes="explorer.enabled && explorer.lanes"
+            :link-mode="explorer.enabled ? 'dependency' : settings.uiState.view.linkMode"
+            :hide-unlinked="explorer.enabled ? false : settings.uiState.view.hideUnlinked"
             :physics-paused="physicsPaused"
             :repulsion="settings.uiState.simulation.repulsion"
             :friction="settings.uiState.simulation.friction"
@@ -207,7 +210,7 @@
           <IssueList
             v-else-if="hasData && !(tokenExpired && isMockGraph) && settings.uiState.view.layout === 'list'"
             class="flex-grow-1 min-h-0"
-            :nodes="filteredNodes"
+            :nodes="displayNodes"
             :issue-open-target="settings.uiState.view.issueOpenTarget"
             :row-click-action="settings.uiState.view.listRowClickAction"
             :grouping-mode="settings.uiState.view.groupingMode"
@@ -220,9 +223,10 @@
         
         <div v-else-if="!loading" class="d-flex flex-column align-center justify-center w-100 h-100 text-medium-emphasis pa-8">
           <v-icon icon="mdi-source-branch" size="64" class="mb-4"></v-icon>
-          <div class="text-h5 text-center mb-4">No data loaded</div>
-          <div class="text-body-1 text-center mb-6">Configure your data sources to get started.</div>
+          <div class="text-h5 text-center mb-4">{{ explorer.enabled ? "Choose a slice above" : "No data loaded" }}</div>
+          <div class="text-body-1 text-center mb-6">{{ explorer.enabled ? "Browse epics or scope values, or search the full group for an issue." : "Configure your data sources to get started." }}</div>
           <v-btn
+            v-if="!explorer.enabled"
             color="primary"
             prepend-icon="mdi-cog"
             @click="configInitialTab = 'gitlab'; activePage = 'config'"
@@ -290,7 +294,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick, toRaw } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch, watchEffect, nextTick, toRaw } from 'vue'
 import { useTheme } from 'vuetify'
 import IssueGraph from './components/IssueGraph.vue'
 import IssueList from './components/IssueList.vue'
@@ -299,6 +303,9 @@ import ConfigPage from './components/ConfigPage.vue'
 import ChatToolsPage from './components/ChatToolsPage.vue'
 import KioskPage from './components/KioskPage.vue'
 import RelationshipStatus from './components/RelationshipStatus.vue'
+import SliceExplorer from './components/SliceExplorer.vue'
+import { useSliceExplorer } from './composables/useSliceExplorer'
+import { useEpicHierarchy } from './composables/useEpicHierarchy'
 import { useIssueRelationships } from './composables/useIssueRelationships'
 import FlakeView from './components/FlakeView.vue'
 import SvnLogDialog from './components/SvnLogDialog.vue'
@@ -316,7 +323,7 @@ import { getTokenExpiry } from './utils/tokenExpiry'
 import { encodeView, decodeView } from './utils/viewShareCodec'
 import { resolveAssigneeFilter } from './utils/issueFields'
 
-const { settings, init: initSettings } = useSettingsStore()
+const { settings, init: initSettings, clearBrowserSiteData } = useSettingsStore()
 
 const isElectron = computed(() => !!window.electronAPI)
 const hasSvnProxy = computed(() => !!String(import.meta.env.VITE_SVN_PROXY_TARGET || '').trim())
@@ -725,6 +732,9 @@ const groupingModeOptions = computed(() => {
   return items
 })
 
+const renderNodes = reactive({})
+const renderEdges = reactive({})
+
 const {
   allStatuses,
   allLabels,
@@ -735,6 +745,7 @@ const {
   allMilestones,
   allPriorities,
   allTypes,
+  matchesFilters,
   filteredNodes,
   filteredEdges,
   hasData,
@@ -742,7 +753,7 @@ const {
   statsText,
   groupStatsText,
   filterCounts
-} = useGraphDerivedState({ settings, nodes, edges })
+} = useGraphDerivedState({ settings, nodes: renderNodes, edges: renderEdges })
 
 // Active assignee filter resolved into a concrete name set + flags. Drives multi-assignee
 // clone restriction in IssueGraph so co-assignees not in the filter don't get spawned groups.
@@ -820,6 +831,29 @@ const {
 const relationships = reactive(useIssueRelationships({
   config: settings.config, nodes, edges, visibleNodes: filteredNodes, loading, resolveBaseUrl: resolveGitLabApiBaseUrl
 }))
+
+const hierarchy = reactive(useEpicHierarchy({ config: settings.config, nodes, resolveBaseUrl: resolveGitLabApiBaseUrl }))
+const clearSiteData = async () => {
+  relationships.cancel()
+  hierarchy.cancel()
+  try {
+    await clearBrowserSiteData()
+    window.location.reload()
+  } catch (e) { error.value = 'Could not clear site data: ' + (e?.message || String(e)) }
+}
+
+const explorer = reactive(useSliceExplorer({ config: settings.config, nodes, edges, hierarchy, relationships, filteredNodes, matchesFilters }))
+const displayNodes = computed(() => explorer.enabled ? explorer.presentation.nodes : filteredNodes.value)
+const displayEdges = computed(() => explorer.enabled ? explorer.presentation.edges : filteredEdges.value)
+watchEffect(() => {
+  const nextNodes = explorer.enabled ? explorer.slice.nodes : nodes
+  const nextEdges = explorer.enabled ? explorer.slice.edges : edges
+  const ids = new Set(Object.keys(nextNodes))
+  for (const key of Object.keys(renderNodes)) if (!ids.has(key)) delete renderNodes[key]
+  Object.assign(renderNodes, nextNodes)
+  for (const key of Object.keys(renderEdges)) delete renderEdges[key]
+  for (const [key, edge] of Object.entries(nextEdges)) if (ids.has(edge.source) && ids.has(edge.target)) renderEdges[key] = edge
+})
 
 const { onIssueStateChange, onIssueAssigneeChange } = useGitLabIssueMutations({
   settings,

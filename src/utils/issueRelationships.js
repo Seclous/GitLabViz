@@ -13,11 +13,14 @@ export function canonicalRelationship(source, target, link) {
 }
 
 // Only actual endpoint data returned by GitLab can create external context.
-export function assembleRelationships(nodes, observations, { maxExternal = 100, maxEdges = 10000 } = {}) {
+export function assembleRelationships(nodes, observations, { maxExternal = 100, maxEdges = 10000, maxHops = 1 } = {}) {
   const result = {}, external = {}, canonical = new Set()
   const diagnostics = { missing: 0, unsupported: 0, externalOmitted: 0, edgesOmitted: 0 }
+  let frontier = new Set(Object.keys(nodes))
+  for (let hop = 0; hop < maxHops; hop++) {
+  const next = new Set()
   for (const [source, observation] of Object.entries(observations)) {
-    if (!nodes[source] || nodes[source].externalContext) continue
+    if (!frontier.has(source)) continue
     for (const link of observation.links || []) {
       let target
       try { target = issueKey(link) } catch { diagnostics.missing++; continue }
@@ -34,8 +37,11 @@ export function assembleRelationships(nodes, observations, { maxExternal = 100, 
           type: 'gitlab_issue', name: 'External context · ' + identity.fullReference + ' ' + link.title,
           color: '#8a8a8a', webUrl: link.web_url, _raw: { ...link, labels: link.labels || [], assignees: link.assignees || [] } }
       }
+      if (!nodes[target]) next.add(target)
       canonical.add(key); result[edge.id] = edge
     }
+  }
+  frontier = next
   }
   return { edges: result, external, diagnostics }
 }

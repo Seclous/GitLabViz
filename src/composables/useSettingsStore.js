@@ -13,7 +13,9 @@ export function useSettingsStore() {
   const settings = reactive(defaultSettings())
   
   // 2. Define Save Logic
+  let stopSaving, pendingSave = Promise.resolve(), clearing = false
   const save = () => {
+    if (clearing) return
     // IMPORTANT: do not mutate the in-memory reactive settings when encoding for storage.
     // toRaw(settings) returns the underlying object; changing it would change live state.
     const src = toRaw(settings)
@@ -29,7 +31,8 @@ export function useSettingsStore() {
       snapshot.config.tokenObfuscated = encodeGitLabTokenForStorage(snapshot.config.token)
       delete snapshot.config.token
     }
-    hasDisk() ? window.electronAPI.settingsSet(snapshot) : localforage.setItem('settings', snapshot)
+    pendingSave = pendingSave.catch(() => {}).then(() => hasDisk() ? window.electronAPI.settingsSet(snapshot) : localforage.setItem('settings', snapshot))
+    return pendingSave
   }
 
   // 3. One-time Init
@@ -172,10 +175,19 @@ export function useSettingsStore() {
     }
 
     // 4. ONLY start watching after load is complete.
-    watch(settings, save, { deep: true })
+    stopSaving = watch(settings, save, { deep: true })
     
     return settings
   })()
 
-  return (_store = { settings, init: () => init })
+  const clearBrowserSiteData = async () => {
+    if (hasDisk()) throw new Error('Browser site reset is unavailable in Electron.')
+    clearing = true
+    stopSaving?.()
+    await pendingSave.catch(() => {})
+    await localforage.clear()
+    localStorage.clear()
+    sessionStorage.clear()
+  }
+  return (_store = { settings, init: () => init, clearBrowserSiteData })
 }

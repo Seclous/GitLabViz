@@ -731,6 +731,7 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
     allMilestones,
     allPriorities,
     allTypes,
+    matchesFilters: node => passesFilters(node, new Set()),
     filteredNodes,
     filteredEdges,
     hasData,

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { createRequestBudget, nextRestPage, markPartial } from './gitlabPagination'
 import { decodeGitLabTokenFromStorage } from '../utils/tokenObfuscation'
 import { getScopedLabelValue } from '../utils/scopedLabels'
 
@@ -25,7 +26,13 @@ export const normalizeGitLabApiBaseUrl = (gitlabUrl) => {
   return u
 }
 
-const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms))
+const abortRequest = signal => { if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError') }
+const sleep = (ms, signal) => new Promise((resolve, reject) => {
+  abortRequest(signal)
+  const cancel = () => { clearTimeout(timer); reject(new DOMException('Cancelled', 'AbortError')) }
+  const timer = setTimeout(() => { signal?.removeEventListener('abort', cancel); resolve() }, ms)
+  signal?.addEventListener('abort', cancel, { once: true })
+})
 
 const getRetryAfterMs = (headers) => {
   const ra = headers && (headers['retry-after'] || headers['Retry-After'])
@@ -63,6 +70,7 @@ export const describeGitLabRequestError = (error) => {
 }
 
 const isRetryableGitLabError = (error) => {
+  if (error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') return false
   const status = error?.response?.status
   // Network / timeout / no response
   if (!status) {
@@ -85,7 +93,7 @@ const isRetryableGitLabError = (error) => {
 export const getNetworkFailureCount = (client) => Number(client?.__glvNetworkFailures || 0)
 export const resetNetworkFailureCount = (client) => { if (client) client.__glvNetworkFailures = 0 }
 
-const gitlabRequest = async (client, method, url, config = {}, retryOptions = {}) => {
+export const gitlabRequest = async (client, method, url, config = {}, retryOptions = {}) => {
   const {
     maxRetries = DEFAULT_MAX_RETRIES,
     retryBaseDelayMs = DEFAULT_RETRY_BASE_DELAY_MS,
@@ -95,6 +103,7 @@ const gitlabRequest = async (client, method, url, config = {}, retryOptions = {}
   let attempt = 0
   // total tries = 1 + maxRetries
   while (true) {
+    abortRequest(config.signal)
     try {
       // Support both axios instances (client.request) and unit test mocks (client.get/put).
       if (typeof client?.request === 'function') {
@@ -119,6 +128,8 @@ const gitlabRequest = async (client, method, url, config = {}, retryOptions = {}
 
       throw new Error(`Unsupported GitLab client method: ${m || '(empty)'}`)
     } catch (error) {
+      abortRequest(config.signal)
+      if (error?.name === 'AbortError' || error?.code === 'ERR_CANCELED') throw error
       if (attempt >= maxRetries || !isRetryableGitLabError(error)) {
         // Count "no HTTP response" failures (browser blocked / network / TLS) so callers
         // that swallow per-request errors can still detect a systemic block.
@@ -135,7 +146,7 @@ const gitlabRequest = async (client, method, url, config = {}, retryOptions = {}
 
       attempt++
       console.warn(`[GitLab] Request failed (${error?.response?.status || 'network'}). Retrying in ${waitMs}ms...`, url)
-      await sleep(waitMs)
+      await sleep(waitMs, config.signal)
     }
   }
 }
@@ -177,7 +188,8 @@ const fetchIssuesRest = async (client, endpoint, onProgress, options = {}) => {
   const updatedAfter = options?.params?.updated_after || null
 
   const all = []
-  let partial = false
+  const warnings = []
+  const budget = options.budget || createRequestBudget(options.maxRequests)
   let page = 1
   while (true) {
     if (onProgress) {
@@ -197,19 +209,21 @@ const fetchIssuesRest = async (client, endpoint, onProgress, options = {}) => {
 
     let resp
     try {
+      budget.claim(options.signal)
       resp = await gitlabGet(
         client,
         endpoint,
-        { params },
+        { params, signal: options.signal },
         { maxRetries: DEFAULT_MAX_RETRIES }
       )
     } catch (e) {
-      partial = true
-      console.warn('[GitLab] REST issues fetch interrupted; keeping partial results for resume.', e?.message || e)
+      abortRequest(options.signal)
+      warnings.push(e?.response?.status ? 'HTTP ' + e.response.status + '; issue coverage is incomplete.' : 'Issue fetch interrupted: ' + (e?.message || 'Request failed'))
       break
     }
 
-    const items = Array.isArray(resp?.data) ? resp.data : []
+    if (!Array.isArray(resp?.data)) { warnings.push('Unexpected issue response; coverage is incomplete.'); break }
+    const items = resp.data
     items.forEach(i => {
       if (!i) return
       // Ensure required arrays/scalars exist for downstream code paths.
@@ -225,61 +239,56 @@ const fetchIssuesRest = async (client, endpoint, onProgress, options = {}) => {
       all.push(i)
     })
 
-    const nextPage = resp?.headers?.['x-next-page'] ?? resp?.headers?.['X-Next-Page']
-    if (nextPage != null) {
-      if (!String(nextPage).trim()) break
-      page = Number(nextPage) || (page + 1)
-    } else {
-      if (items.length < PER_PAGE) break
-      page++
-    }
+    try { page = nextRestPage(resp, page) }
+    catch (error) { warnings.push(error.message); break }
+    if (!page) break
   }
-
-  try {
-    Object.defineProperty(all, '__glvPartial', { value: partial, enumerable: false })
-  } catch {}
-  return all
+  return markPartial(all, warnings)
 }
 
 export const fetchProjectIssuesRest = (client, projectId, onProgress, options = {}) =>
   fetchIssuesRest(client, '/projects/' + encodeURIComponent(String(projectId).trim()) + '/issues', onProgress, options)
 
-export const fetchGroupProjects = async (client, source) => {
-  const projects = {}
+export const fetchGroupProjects = async (client, source, options = {}) => {
+  const projects = {}, warnings = []
+  const budget = createRequestBudget(options.maxRequests || 500)
   let page = 1
   do {
+    budget.claim(options.signal)
     const response = await gitlabGet(client, '/groups/' + encodeURIComponent(source.idOrPath) + '/projects', {
-      params: { per_page: PER_PAGE, page, include_subgroups: source.includeSubgroups, with_shared: source.includeShared }
+      params: { per_page: PER_PAGE, page, include_subgroups: source.includeSubgroups, with_shared: source.includeShared }, signal: options.signal
     }, { maxRetries: DEFAULT_MAX_RETRIES })
-    const items = Array.isArray(response.data) ? response.data : []
-    for (const project of items) projects[project.id] = project
-    const nextPage = response.headers?.['x-next-page'] ?? response.headers?.['X-Next-Page']
-    page = nextPage != null ? Number(nextPage) || 0 : (items.length === PER_PAGE ? page + 1 : 0)
+    if (!Array.isArray(response.data)) throw new Error('Unexpected project directory response')
+    for (const project of response.data) if (project?.id != null) projects[project.id] = project
+    try { page = nextRestPage(response, page) }
+    catch (error) { warnings.push(error.message); break }
+    if (page && budget.exhausted) { warnings.push('Project directory request budget reached; coverage is incomplete.'); break }
   } while (page)
-  return projects
+  return markPartial(projects, warnings)
 }
 
 export const fetchGroupIssuesRest = async (client, source, projects, onProgress, options = {}) => {
-  const issues = await fetchIssuesRest(client, '/groups/' + encodeURIComponent(source.idOrPath) + '/issues', onProgress, options)
+  const budget = options.budget || createRequestBudget(options.maxRequests)
+  const boundedOptions = { ...options, budget }
+  const issues = await fetchIssuesRest(client, '/groups/' + encodeURIComponent(source.idOrPath) + '/issues', onProgress, boundedOptions)
   const allowed = new Set(Object.keys(projects))
   const result = issues.filter(issue => allowed.has(String(issue.project_id)))
-  // Verify opened coverage against project counters. Shared projects and queries
-  // without a comparable counter use per-project coverage checks.
+  const counts = new Map()
+  for (const issue of result) if (issue.state === 'opened') counts.set(String(issue.project_id), (counts.get(String(issue.project_id)) || 0) + 1)
   const fallback = Object.values(projects).filter(project => {
     if (source.includeShared || options.params?.updated_after || (options.state || 'opened') !== 'opened') return true
-    if (project.open_issues_count == null) return true
-    const count = result.filter(issue => issue.project_id === project.id && issue.state === 'opened').length
-    return Number(project.open_issues_count || 0) > count
+    return project.open_issues_count == null || Number(project.open_issues_count || 0) > (counts.get(String(project.id)) || 0)
   })
-  let partial = !!issues.__glvPartial
+  const warnings = [...(projects.__glvWarnings || []), ...(issues.__glvWarnings || [])]
   for (const project of fallback) {
-    const extra = await fetchProjectIssuesRest(client, project.id, onProgress, options)
-    partial ||= !!extra.__glvPartial
+    abortRequest(options.signal)
+    if (budget.exhausted) { warnings.push('Issue request budget reached; project verification is incomplete.'); break }
+    const extra = await fetchProjectIssuesRest(client, project.id, onProgress, boundedOptions)
+    warnings.push(...extra.__glvWarnings)
     result.push(...extra)
   }
   const unique = [...new Map(result.map(issue => [issue.id ?? issue.project_id + ':' + issue.iid, issue])).values()]
-  Object.defineProperty(unique, '__glvPartial', { value: partial, enumerable: false })
-  return unique
+  return markPartial(unique, warnings)
 }
 
 const ensureIssueCaps = async (client, fullPath) => {

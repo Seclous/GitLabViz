@@ -740,6 +740,7 @@
               >
                 Delete
               </v-btn>
+              <v-btn v-if="!isElectron" variant="text" color="error" class="text-none" :disabled="updateStatus?.loading" @click="clearSiteData">Clear site data</v-btn>
               &nbsp;
               <v-btn variant="tonal" class="text-none" prepend-icon="mdi-download" @click="backupAllCache">
                 Backup
@@ -1458,7 +1459,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['close', 'save', 'clear-data', 'update-source', 'clear-source', 'tab-change', 'open-kiosk'])
+const emit = defineEmits(['close', 'save', 'clear-data', 'clear-site-data', 'update-source', 'clear-source', 'tab-change', 'open-kiosk'])
 
 // Use shared settings directly (saves on any change)
 const { settings } = useSettingsStore()
@@ -2146,6 +2147,10 @@ const updateAllCache = () => {
     }
   }
   if (isElectron.value && settings.config.mattermostUrl && settings.config.mattermostToken) emit('update-source', 'mattermost')
+}
+
+const clearSiteData = () => {
+  if (confirm('Clear all browser data for this site, including saved API keys and settings? The page will reload.')) emit('clear-site-data')
 }
 
 const deleteAllCache = () => {

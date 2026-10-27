@@ -1,4 +1,4 @@
-import { toRaw, watch } from 'vue'
+import { toRaw, watch, onBeforeUnmount } from 'vue'
 import { issueKey, normalizeIssueIdentity, issueReference } from '../utils/issueIdentity'
 import { getGitLabSource, gitlabSourceCacheKey, readGitLabSourceCache, writeGitLabSourceCache, clearGitLabSourceCache } from '../services/gitlabSourceCache'
 import localforage from 'localforage'
@@ -102,6 +102,8 @@ export function useDataLoader ({
   // comparing the current setting to `gitlabCacheMeta.value.lastSyncClosedDays` inside loadData;
   // this watcher is a belt-and-braces flag for changes that happen mid-session.
   let pendingFullSync = false
+  let sourceController
+  onBeforeUnmount(() => sourceController?.abort())
   watch(() => settings.config.gitlabClosedDays, (newVal, oldVal) => {
     if (oldVal === undefined || newVal === oldVal) return
     pendingFullSync = true
@@ -137,6 +139,7 @@ export function useDataLoader ({
       clearIssueState()
       const cachedMeta = cache?.meta
       if (cachedMeta && typeof cachedMeta === 'object') {
+        if (cachedMeta.partial) error.value = 'Cached issue index is partial. Refresh to complete coverage.'
         gitlabCacheMeta.value = {
           ...cachedMeta,
           nodes: cachedMeta.nodes || 0,
@@ -200,6 +203,7 @@ export function useDataLoader ({
   }
 
   watch(() => gitlabSourceCacheKey(settings.config), () => {
+    sourceController?.abort()
     pendingFullSync = true
     clearIssueState()
     void initCachedData()
@@ -296,15 +300,19 @@ export function useDataLoader ({
 
     const bail = (msg) => { error.value = msg; loading.value = false }
 
+    sourceController?.abort()
+    sourceController = new AbortController()
+    const sourceSignal = sourceController.signal
     const sourceConfig = { ...settings.config }
     const source = getGitLabSource(sourceConfig)
     const ensureCurrentSource = () => {
+      if (sourceSignal.aborted) throw new DOMException('Source changed', 'AbortError')
       if (gitlabSourceCacheKey(sourceConfig) !== gitlabSourceCacheKey(settings.config)) throw new Error('GitLab source changed; refresh the selected source.')
     }
     let projectDirectory = {}
     const fetchSourceIssues = async (client, _projectId, progress, options) => source.kind === 'group'
-      ? fetchGroupIssuesRest(client, source, projectDirectory, progress, options)
-      : fetchProjectIssuesRest(client, source.idOrPath, progress, options)
+      ? fetchGroupIssuesRest(client, source, projectDirectory, progress, { ...options, signal: sourceSignal })
+      : fetchProjectIssuesRest(client, source.idOrPath, progress, { ...options, signal: sourceSignal })
     if (doGitLab && (!settings.config.token || !source.idOrPath || !gitlabApiBaseUrl)) {
       return bail('Please provide GitLab URL, Token, and a Project or Group ID')
     }
@@ -349,6 +357,7 @@ export function useDataLoader ({
     resetNetworkFailureCount(gqlClient)
     let didGitLabFetch = false
     let gitlabSyncCursorForSave = null
+    let gitlabIndexPartial = false
 
     try {
       // 0. Refresh Mattermost (ChatTools) session data (lightweight)
@@ -412,7 +421,7 @@ export function useDataLoader ({
             settings.meta.gitlabCanWrite = false
           }
 
-          if (source.kind === 'group') projectDirectory = await fetchGroupProjects(restClient, source)
+          if (source.kind === 'group') projectDirectory = await fetchGroupProjects(restClient, source, { signal: sourceSignal })
           if (updatedAfter) {
             // Incremental sync must include state transitions (opened <-> closed), not just new opened issues.
             const updated = await fetchSourceIssues(
@@ -525,7 +534,9 @@ export function useDataLoader ({
 
           // Only replace the whole dataset when we got a full (non-partial) fetch.
           // If partial, merge into existing nodes/edges instead (resume-friendly).
-          const isPartial = !!issues?.__glvPartial
+          const isPartial = !!issues?.__glvPartial || !!projectDirectory.__glvPartial
+          gitlabIndexPartial = isPartial
+          if (isPartial) error.value = 'Issue index is partial. ' + (issues?.__glvWarnings?.join('; ') || projectDirectory.__glvWarnings?.join('; ') || 'Refresh to resume interrupted requests.')
           gitlabSyncCursorForSave = isPartial ? cachedCursor : startedCursor
           // For Ctrl+Click (force full clean), never merge partial results into existing data.
           if ((forceFull || !sameGitlabCacheIdentity) && isPartial) {
@@ -772,6 +783,7 @@ export function useDataLoader ({
             edges: Object.keys(edges).length,
             updatedAt: now,
             syncCursor,
+            partial: gitlabIndexPartial,
             lastSyncClosedDays: curClosedDays,
             projectId: String(settings.config.projectId || '').trim(),
             apiBaseUrl: String(gitlabApiBaseUrl || '').trim()
