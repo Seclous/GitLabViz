@@ -1,0 +1,32 @@
+import { describe, it, expect } from 'vitest'
+import localforage from 'localforage'
+import { gitlabSourceCacheKey, writeGitLabSourceCache, readGitLabSourceCache } from './gitlabSourceCache'
+const config = { gitlabApiBaseUrl: 'https://gitlab.example/api/v4', projectId: 'a/b', groupId: 'a', gitlabSourceKind: 'project' }
+describe('source-scoped GitLab cache', () => {
+  it('isolates host, source, subgroup, and shared-project settings', async () => {
+    await localforage.clear()
+    const nodes = { 'issue:1': { id: 'issue:1', type: 'gitlab_issue', projectId: 1, iid: 42 } }
+    await writeGitLabSourceCache(config, { nodes, edges: {}, projects: { 1: { id: 1 } }, meta: { syncCursor: 'cursor' } })
+    expect((await readGitLabSourceCache(config)).nodes).toEqual(nodes)
+    for (const patch of [{ gitlabSourceKind: 'group' }, { gitlabApiBaseUrl: 'https://other.example' }, { projectId: 'a/c' }, { gitlabIncludeSubgroups: false }, { gitlabIncludeShared: true }]) {
+      expect(gitlabSourceCacheKey({ ...config, ...patch })).not.toBe(gitlabSourceCacheKey(config))
+      expect(await readGitLabSourceCache({ ...config, ...patch })).toBeNull()
+    }
+    expect((await readGitLabSourceCache(config)).meta.syncCursor).toBe('cursor')
+  })
+  it('round-trips duplicate IIDs through a JSON cache export', async () => {
+    const groupConfig = { ...config, gitlabSourceKind: 'group', groupId: 'a' }
+    const nodes = Object.fromEntries([1, 2].map(id => ['issue:' + id, { id: 'issue:' + id, projectId: id, iid: 42, fullReference: 'a/project-' + id + '#42' }]))
+    await writeGitLabSourceCache(groupConfig, { nodes, edges: {}, projects: { 1: { id: 1 }, 2: { id: 2 } }, meta: {} })
+    const exported = JSON.parse(JSON.stringify(await readGitLabSourceCache(groupConfig)))
+    await localforage.clear()
+    await writeGitLabSourceCache(groupConfig, exported)
+    expect((await readGitLabSourceCache(groupConfig)).nodes).toEqual(nodes)
+  })
+  it('rejects legacy IID dictionaries and dangling edges', async () => {
+    for (const value of [{ nodes: { 42: { id: '42' } }, edges: {} }, { nodes: { 'issue:1': { id: 'issue:1' } }, edges: { bad: { source: 'issue:1', target: '42' } } }]) {
+      await writeGitLabSourceCache(config, value)
+      expect(await readGitLabSourceCache(config)).toBeNull()
+    }
+  })
+})

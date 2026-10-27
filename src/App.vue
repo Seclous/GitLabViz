@@ -127,6 +127,7 @@
       />
       <KioskPage
         v-else-if="activePage === 'kiosk'"
+        :edges="edges"
         :nodes="nodes"
         :loading="loading"
         :last-updated="lastUpdated"
@@ -175,6 +176,8 @@
           </v-btn>
         </div>
         
+          <RelationshipStatus :config="settings.config" :relationships="relationships" :loading="loading" />
+
           <!-- Graph and list share `filteredNodes` so switching between them
                is just a render swap — no data refetch / lag. v-if (not v-show)
                keeps each view's resources clean while it's not visible. -->
@@ -295,6 +298,8 @@ import AppSidebar from './components/AppSidebar.vue'
 import ConfigPage from './components/ConfigPage.vue'
 import ChatToolsPage from './components/ChatToolsPage.vue'
 import KioskPage from './components/KioskPage.vue'
+import RelationshipStatus from './components/RelationshipStatus.vue'
+import { useIssueRelationships } from './composables/useIssueRelationships'
 import FlakeView from './components/FlakeView.vue'
 import SvnLogDialog from './components/SvnLogDialog.vue'
 import { useAppTheme } from './composables/useAppTheme'
@@ -811,6 +816,11 @@ const {
   createMockIssuesGraph
 })
 
+// Keep cached relationship coverage available when opening Kiosk directly.
+const relationships = reactive(useIssueRelationships({
+  config: settings.config, nodes, edges, visibleNodes: filteredNodes, loading, resolveBaseUrl: resolveGitLabApiBaseUrl
+}))
+
 const { onIssueStateChange, onIssueAssigneeChange } = useGitLabIssueMutations({
   settings,
   nodes,
@@ -896,10 +906,10 @@ function createMockIssuesGraph () {
       task_status: null,
       __mock: true
     }
-    const id = String(iid)
+    const id = `issue:${iid}`
     return [id, {
       id,
-      name: `#${id} ${title.length > 20 ? title.substring(0, 20) + '...' : title}`,
+      name: `#${iid} ${title.length > 20 ? title.substring(0, 20) + '...' : title}`,
       color: raw.state === 'opened' ? '#28a745' : '#dc3545',
       commentsCount: raw.user_notes_count,
       updatedAt: raw.updated_at,
@@ -935,9 +945,9 @@ function createMockIssuesGraph () {
   for (const [id, n] of samples) nodesOut[id] = n
 
   // a tiny dependency chain
-  edgesOut['101-102'] = { source: '101', target: '102', label: 'blocks' }
-  edgesOut['102-103'] = { source: '102', target: '103', label: 'related' }
-  edgesOut['103-104'] = { source: '103', target: '104', label: 'relates' }
+  edgesOut['101-102'] = { source: 'issue:101', target: 'issue:102', label: 'blocks' }
+  edgesOut['102-103'] = { source: 'issue:102', target: 'issue:103', label: 'related' }
+  edgesOut['103-104'] = { source: 'issue:103', target: 'issue:104', label: 'relates' }
 
   return { nodes: nodesOut, edges: edgesOut }
 }

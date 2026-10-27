@@ -6,6 +6,10 @@ export const defaultSettings = () => ({
     // (leave empty and configure in-app; in dev you can also use Vite proxy)
     gitlabApiBaseUrl: '',
     projectId: '',
+    gitlabSourceKind: 'project',
+    groupId: '',
+    gitlabIncludeSubgroups: true,
+    gitlabIncludeShared: false,
     enableGitLab: true,
     enableSvn: false,
     svnUsername: '',

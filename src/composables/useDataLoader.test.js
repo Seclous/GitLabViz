@@ -1,3 +1,4 @@
+import { gitlabSourceCacheKey, writeGitLabSourceCache } from '../services/gitlabSourceCache'
 import { reactive, ref } from 'vue'
 import localforage from 'localforage'
 
@@ -11,6 +12,8 @@ vi.mock('../services/gitlab', () => {
     enrichEpicTitlesFromRest: vi.fn(),
     enrichIssuesFromGraphql: vi.fn(),
     fetchProjectIssuesRest: vi.fn(async () => []),
+    fetchGroupProjects: vi.fn(async () => ({})),
+    fetchGroupIssuesRest: vi.fn(async () => []),
     fetchIssueLinks: vi.fn(async () => []),
     fetchIssueResourceMilestoneEvents: vi.fn(async () => []),
     fetchTokenInfo: vi.fn(async () => ({ scopes: [], expiresAt: null })),
@@ -43,14 +46,10 @@ describe('useDataLoader', () => {
 
   it('initCachedData loads cached nodes/edges but filters out svn nodes', async () => {
     await localforage.clear()
-    await localforage.setItem('gitlab_nodes', {
-      '1': { id: '1', type: 'gitlab_issue', _raw: {} },
+    await writeGitLabSourceCache({}, { nodes: {
+      'issue:1': { id: 'issue:1', type: 'gitlab_issue', _raw: {} },
       'svn-1': { id: 'svn-1', type: 'svn_commit', _raw: {} }
-    })
-    await localforage.setItem('gitlab_edges', {
-      '1-2': { source: '1', target: '2' },
-      'svn-1-1': { source: 'svn-1', target: '1' }
-    })
+    }, edges: { 'svn-1-1': { source: 'svn-1', target: 'issue:1' } } })
 
     const settings = reactive({
       meta: {},
@@ -100,7 +99,7 @@ describe('useDataLoader', () => {
 
     await initCachedData()
 
-    expect(nodes['1']).toBeTruthy()
+    expect(nodes['issue:1']).toBeTruthy()
     expect(nodes['svn-1']).toBeUndefined()
     expect(Object.keys(edges).some(k => k.includes('svn'))).toBe(false)
   })
@@ -160,6 +159,8 @@ describe('useDataLoader', () => {
     const gitlab = await import('../services/gitlab')
 
     const issue1 = {
+      id: 1,
+      project_id: 9,
       iid: 1,
       title: 'A',
       state: 'opened',
@@ -241,9 +242,82 @@ describe('useDataLoader', () => {
 
     await loadData()
 
-    expect(nodes['1']).toBeTruthy()
+    expect(nodes['issue:1']).toBeTruthy()
     expect(gitlabCacheMeta.value?.nodes).toBeGreaterThan(0)
     expect(gitlabCacheMeta.value?.edges).toBeGreaterThanOrEqual(0)
+    expect(error.value).toBe('')
+  })
+
+  it('loads duplicate issue numbers across group projects without changing the view', async () => {
+    const gitlab = await import('../services/gitlab')
+    gitlab.fetchGroupProjects.mockResolvedValueOnce({ 11: { id: 11, path_with_namespace: 'team/a' }, 12: { id: 12, path_with_namespace: 'team/b' } })
+    gitlab.fetchGroupIssuesRest.mockResolvedValueOnce([
+      { id: 101, project_id: 11, iid: 42, title: 'First', state: 'opened', labels: [], references: { full: 'team/a#42' } },
+      { id: 102, project_id: 12, iid: 42, title: 'Second', state: 'opened', labels: [], references: { full: 'team/b#42' } }
+    ])
+    const settings = reactive({
+      meta: {},
+      config: {
+        enableGitLab: true,
+        enableSvn: false,
+        token: 't',
+        gitlabSourceKind: 'group',
+        groupId: 'team',
+        gitlabIncludeSubgroups: true,
+        gitlabIncludeShared: false,
+        gitlabApiBaseUrl: 'https://gitlab.example.com',
+        gitlabClosedDays: 0
+      }
+    })
+    const nodes = reactive({})
+    const edges = reactive({})
+    const issueGraphSnapshot = reactive({ nodes: {}, edges: {} })
+    const svnUrl = ref('')
+    const svnVizLimit = ref(2000)
+    const svnRecentCommits = ref([])
+    const svnCommitCount = ref(0)
+    const gitlabCacheMeta = ref({})
+    const mattermostMeta = ref({})
+    const lastUpdated = ref(null)
+    const loading = ref(false)
+    const loadingMessage = ref('')
+    const updateStatus = ref({})
+    const error = ref('')
+    const isElectron = ref(false)
+    const canUseSvn = ref(false)
+    const vizMode = ref('issues')
+
+    const { loadData } = useDataLoader({
+      settings,
+      nodes,
+      edges,
+      issueGraphSnapshot,
+      svnUrl,
+      svnVizLimit,
+      svnRecentCommits,
+      svnCommitCount,
+      gitlabCacheMeta,
+      mattermostMeta,
+      lastUpdated,
+      loading,
+      loadingMessage,
+      updateStatus,
+      error,
+      isElectron,
+      canUseSvn,
+      vizMode,
+      buildSvnVizGraph: () => {},
+      resetFilters: () => {},
+      createMockIssuesGraph: () => ({ nodes: {}, edges: {} })
+    })
+
+    await loadData()
+
+    expect(error.value).toBe('')
+    expect(Object.keys(nodes).sort()).toEqual(['issue:101', 'issue:102'])
+    expect(nodes['issue:101'].fullReference).toBe('team/a#42')
+    expect(nodes['issue:102'].fullReference).toBe('team/b#42')
+    expect(vizMode.value).toBe('issues')
     expect(error.value).toBe('')
   })
 
@@ -313,7 +387,7 @@ describe('useDataLoader', () => {
     })
 
     const closedIssue = {
-      iid: 1,
+      id: 1, project_id: 9, iid: 1,
       title: 'A',
       state: 'closed',
       labels: [],
@@ -350,16 +424,17 @@ describe('useDataLoader', () => {
       }
     })
     const nodes = reactive({
-      '1': { id: '1', type: 'gitlab_issue', _raw: { iid: 1, state: 'opened' } },
-      '2': { id: '2', type: 'gitlab_issue', _raw: { iid: 2, state: 'opened' } }
+      'issue:1': { id: 'issue:1', projectId: 9, type: 'gitlab_issue', _raw: { id: 1, project_id: 9, iid: 1, state: 'opened' } },
+      'issue:2': { id: 'issue:2', projectId: 9, type: 'gitlab_issue', _raw: { id: 2, project_id: 9, iid: 2, state: 'opened' } }
     })
-    const edges = reactive({ '1-2': { source: '1', target: '2' }, 'svn-1-1': { source: 'svn-1', target: '1' } })
+    const edges = reactive({ 'issue:1-issue:2': { source: 'issue:1', target: 'issue:2' }, 'svn-1-1': { source: 'svn-1', target: 'issue:1' } })
     const issueGraphSnapshot = reactive({ nodes: {}, edges: {} })
     const svnUrl = ref('')
     const svnVizLimit = ref(2000)
     const svnRecentCommits = ref([])
     const svnCommitCount = ref(0)
     const gitlabCacheMeta = ref({
+      sourceKey: gitlabSourceCacheKey(settings.config),
       projectId: 'p',
       apiBaseUrl: 'https://gitlab.example.com/api/v4',
       syncCursor: new Date(Date.now() - 60 * 60 * 1000).toISOString()
@@ -401,13 +476,13 @@ describe('useDataLoader', () => {
     await loadData()
 
     // cached issues are kept and updated (gitlabClosedDays does not block updates)
-    expect(nodes['1']).toBeTruthy()
-    expect(nodes['1']?.closedAt).toBeTruthy()
+    expect(nodes['issue:1']).toBeTruthy()
+    expect(nodes['issue:1']?.closedAt).toBeTruthy()
     // Unchanged issues from old caches also gain custom fields on a normal refresh.
-    expect(nodes['1']._raw.custom_field_values[0].selected_options[0].value).toBe('High')
-    expect(nodes['2']._raw.custom_field_values[0].selected_options[0].value).toBe('High')
-    // issue-link edges touching updated issues are cleared for re-linking
-    expect(Object.keys(edges).some(k => k.includes('1-2'))).toBe(false)
+    expect(nodes['issue:1']._raw.custom_field_values[0].selected_options[0].value).toBe('High')
+    expect(nodes['issue:2']._raw.custom_field_values[0].selected_options[0].value).toBe('High')
+    // Issue refresh preserves links; the independent relationship index refreshes them.
+    expect(Object.keys(edges).some(k => k === 'issue:1-issue:2')).toBe(true)
     // but non-issue edges (e.g. SVN) remain
     expect(Object.keys(edges).some(k => k.includes('svn'))).toBe(true)
 
@@ -448,7 +523,7 @@ describe('useDataLoader', () => {
     const canUseSvn = ref(false)
     const vizMode = ref('issues')
 
-    const createMockIssuesGraph = vi.fn(() => ({ nodes: { '1': { id: '1', type: 'gitlab_issue', _raw: {} } }, edges: {} }))
+    const createMockIssuesGraph = vi.fn(() => ({ nodes: { 'issue:1': { id: 'issue:1', type: 'gitlab_issue', _raw: {} } }, edges: {} }))
 
     const { initCachedData } = useDataLoader({
       settings,
@@ -476,7 +551,7 @@ describe('useDataLoader', () => {
 
     await initCachedData()
     expect(createMockIssuesGraph).toHaveBeenCalled()
-    expect(nodes['1']).toBeTruthy()
+    expect(nodes['issue:1']).toBeTruthy()
   })
 
   it('loadData validates missing svn url when svn enabled', async () => {

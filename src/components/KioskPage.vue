@@ -424,7 +424,7 @@
                   @click="openIssue(t.url)"
                   :title="t.url ? 'Open in GitLab' : ''"
                 >
-                  <span class="k-feed-iid">{{ t.iid ? '#' + t.iid : '' }}</span>
+                  <span class="k-feed-iid">{{ t.reference || (t.iid ? '#' + t.iid : '') }}</span>
                   <span class="k-feed-title" :title="t.title">{{ t.title }}</span>
                   <span class="k-feed-who" :title="t.who || ''">
                     <template v-if="t.who">
@@ -449,7 +449,7 @@
                   @click="openIssue(t.url)"
                   :title="t.url ? 'Open in GitLab' : ''"
                 >
-                  <span class="k-feed-iid">{{ t.iid ? '#' + t.iid : '' }}</span>
+                  <span class="k-feed-iid">{{ t.reference || (t.iid ? '#' + t.iid : '') }}</span>
                   <span class="k-feed-title" :title="t.title">{{ t.title }}</span>
                   <span class="k-feed-who" :title="t.who || ''">
                     <template v-if="t.who">
@@ -522,12 +522,12 @@
       <section v-else-if="currentMode === 'blockers'" class="k-blockers">
         <div class="k-section-title k-blockers-title">
           <v-icon icon="mdi-alert-octagon" />
-          Blocked issues · {{ blockers.total }}
+          Critical / attention · {{ blockers.total }}
           <span v-if="blockers.total > blockers.list.length" class="k-section-sub">showing top {{ blockers.list.length }}</span>
         </div>
         <div v-if="!blockers.list.length" class="k-empty">
           <v-icon icon="mdi-check-decagram-outline" size="48" />
-          <div>No blockers — clear sailing.</div>
+          <div>No critical / attention issues.</div>
         </div>
         <ul v-else class="k-target-feed">
           <li
@@ -537,8 +537,8 @@
             @click="openIssue(t.url)"
             :title="t.url ? 'Open in GitLab' : ''"
           >
-            <span class="k-target-pri k-blockers-pri">{{ t.priority || 'BLOCKED' }}</span>
-            <span class="k-feed-iid">{{ t.iid ? '#' + t.iid : '' }}</span>
+            <span class="k-target-pri k-blockers-pri">{{ t.priority || 'ATTENTION' }}</span>
+            <span class="k-feed-iid">{{ t.reference || (t.iid ? '#' + t.iid : '') }}</span>
             <span class="k-feed-title" :title="t.title">{{ t.title }}</span>
             <span class="k-feed-who" v-if="t.assignees && t.assignees.length">
               <span class="k-feed-avatar" :style="{ background: avatarColor(t.assignees[0]) }">{{ initialsOf(t.assignees[0]) }}</span>
@@ -569,7 +569,7 @@
             :title="t.url ? 'Open in GitLab' : ''"
           >
             <span class="k-target-pri k-wip-pri">{{ t.status }}</span>
-            <span class="k-feed-iid">{{ t.iid ? '#' + t.iid : '' }}</span>
+            <span class="k-feed-iid">{{ t.reference || (t.iid ? '#' + t.iid : '') }}</span>
             <span class="k-feed-title" :title="t.title">{{ t.title }}</span>
             <span class="k-feed-who" v-if="t.assignees && t.assignees.length">
               <span class="k-feed-avatar" :style="{ background: avatarColor(t.assignees[0]) }">{{ initialsOf(t.assignees[0]) }}</span>
@@ -982,14 +982,14 @@
         <TransitionGroup v-else tag="ul" name="k-feed-anim" class="k-feed">
           <li
             v-for="e in activityFeed"
-            :key="`${e.kind}-${e.iid}-${e.ts}`"
+            :key="`${e.kind}-${e.id}-${e.ts}`"
             :class="[`k-feed-${e.kind}`, { 'k-clickable': !!e.url }]"
             @click="openIssue(e.url)"
             :title="e.url ? 'Open issue in GitLab' : ''"
           >
             <v-icon class="k-feed-icon" :icon="FEED_ICON[e.kind]" size="small" />
             <span class="k-feed-tag">{{ FEED_LABEL[e.kind] }}</span>
-            <span class="k-feed-iid">{{ e.iid ? '#' + e.iid : '' }}</span>
+            <span class="k-feed-iid">{{ e.reference || (e.iid ? '#' + e.iid : '') }}</span>
             <span class="k-feed-title" :title="e.title">{{ e.title }}</span>
             <span class="k-feed-notes" :title="e.notes ? `${e.notes} comment${e.notes === 1 ? '' : 's'}` : ''">
               <template v-if="e.notes">
@@ -1020,7 +1020,7 @@
         <TransitionGroup v-else tag="ul" name="k-feed-anim" class="k-feed">
           <li
             v-for="e in closedRecently.list"
-            :key="`closed-${e.iid}-${e.ts}`"
+            :key="`closed-${e.id}-${e.ts}`"
             class="k-feed-closed-cel"
             :class="{ 'k-clickable': !!e.url }"
             @click="openIssue(e.url)"
@@ -1028,7 +1028,7 @@
           >
             <v-icon class="k-feed-icon" icon="mdi-check-circle" size="small" />
             <span class="k-feed-tag">CLOSED</span>
-            <span class="k-feed-iid">{{ e.iid ? '#' + e.iid : '' }}</span>
+            <span class="k-feed-iid">{{ e.reference || (e.iid ? '#' + e.iid : '') }}</span>
             <span class="k-feed-title" :title="e.title">{{ e.title }}</span>
             <span class="k-feed-notes" />
             <span class="k-feed-who" :title="e.who || ''">
@@ -1132,14 +1132,15 @@
             <div class="k-health-num">{{ fmtNum(risks.stats.noDueDate) }}</div>
             <div class="k-health-lbl">No due date</div>
           </button>
-          <button type="button" class="k-health-card k-clickable" @click="filterBlocked" title="Filter graph to blocked tickets">
+          <button type="button" class="k-health-card k-clickable" @click="filterBlocked" title="Filter graph to tickets marked blocked by status or label">
             <v-icon :icon="PROBLEM_ICONS.blocked" class="k-health-icon" :style="{ color: PROBLEM_COLORS.blocked }" />
             <div class="k-health-num">{{ fmtNum(risks.stats.blocked) }}</div>
-            <div class="k-health-lbl">Blocked</div>
+            <div class="k-health-lbl">Attention (status)</div>
           </button>
         </div>
 
         <div class="k-section-title k-health-title">
+          <span class="text-body-2">Dependency-blocked: {{ dependencies.blocked.size }} · Unknown dependency state: {{ dependencies.unknown.size }} (indexed links only)</span><br>
           Most problematic · {{ risks.offenders.length }} ticket{{ risks.offenders.length === 1 ? '' : 's' }} with 2+ problems
         </div>
         <div v-if="!risks.offenders.length" class="k-empty">
@@ -1154,7 +1155,7 @@
             :title="t.url ? 'Open in GitLab' : ''"
           >
             <span class="k-target-pri">{{ t.priority || '—' }}</span>
-            <span class="k-feed-iid">{{ t.iid ? '#' + t.iid : '' }}</span>
+            <span class="k-feed-iid">{{ t.reference || (t.iid ? '#' + t.iid : '') }}</span>
             <span class="k-feed-title" :title="t.title">{{ t.title }}</span>
             <span class="k-health-tags">
               <span
@@ -1250,7 +1251,7 @@
             :title="t.url ? 'Open in GitLab' : ''"
           >
             <span class="k-target-pri">{{ t.priority || '—' }}</span>
-            <span class="k-feed-iid">{{ t.iid ? '#' + t.iid : '' }}</span>
+            <span class="k-feed-iid">{{ t.reference || (t.iid ? '#' + t.iid : '') }}</span>
             <span class="k-feed-title" :title="t.title">{{ t.title }}</span>
             <span class="k-health-tags">
               <span
@@ -1287,7 +1288,9 @@
 </template>
 
 <script setup>
+import { issueReference } from '../utils/issueIdentity'
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { dependencySummary } from '../utils/issueRelationships'
 import { Chart } from 'chart.js/auto'
 import { useSettingsStore } from '../composables/useSettingsStore'
 import { HOTKEY_ACTIONS, getEventCombo } from '../composables/useHotkeys'
@@ -1299,6 +1302,7 @@ import FlakeKioskPanel from './FlakeKioskPanel.vue'
 
 const props = defineProps({
   nodes: { type: Object, default: () => ({}) },
+  edges: { type: Object, default: () => ({}) },
   loading: { type: Boolean, default: false },
   lastUpdated: { type: Number, default: null }, // ms epoch
   error: { type: String, default: '' },        // last loader error (empty = healthy)
@@ -1306,6 +1310,8 @@ const props = defineProps({
   mode: { type: String, default: '' },         // current mode id (driven by URL via parent)
   viewParam: { type: String, default: '' }     // 'paused=1/cycle=10/refresh=2'
 })
+const dependencies = computed(() => dependencySummary(props.nodes, props.edges))
+
 const emit = defineEmits(['close', 'update:mode', 'update:viewParam', 'apply-filter', 'open-config'])
 
 const { settings } = useSettingsStore()
@@ -1314,7 +1320,7 @@ const root = ref(null)
 const ALL_MODES = [
   { id: 'target',         label: 'Target milestone' },
   { id: 'burndown',       label: 'Milestone burndown' },
-  { id: 'blockers',       label: 'Blocked issues' },
+  { id: 'blockers',       label: 'Critical / attention' },
   { id: 'wipStale',       label: 'Stale WIP' },
   { id: 'today',          label: "Today's pulse" },
   { id: 'velocity',       label: 'Velocity' },
@@ -2184,7 +2190,8 @@ const targetData = computed(() => {
     if (isOpen(n)) {
       open++
       openList.push({
-        iid: raw.iid != null ? String(raw.iid) : '',
+        id: n.id, reference: issueReference(n, n.inSelectedGroup),
+      iid: raw.iid != null ? String(raw.iid) : '',
         title: raw.title || n.name,
         url: raw.web_url || '',
         priority: getIssuePriority(raw) || '',
@@ -2883,6 +2890,7 @@ const targetRecent = computed(() => {
     const raw = n._raw || {}
     if (raw?.milestone?.title !== title) continue
     const base = {
+      id: n.id, reference: issueReference(n, n.inSelectedGroup),
       iid: raw.iid != null ? String(raw.iid) : '',
       title: raw.title || n.name,
       url: raw.web_url || ''
@@ -2905,20 +2913,21 @@ const activityFeed = computed(() => {
   for (const n of items.value) {
     const raw = n._raw || {}
     const title = raw.title || n.name || (raw.iid ? `#${raw.iid}` : '(untitled)')
+    const id = n.id, reference = issueReference(n, n.inSelectedGroup)
     const iid = raw.iid != null ? String(raw.iid) : ''
     const url = raw.web_url || ''
     const notes = Number(raw.user_notes_count) || 0
     const c = safeDate(raw.created_at)
     const u = safeDate(raw.updated_at)
     const cl = safeDate(raw.closed_at)
-    if (c) ev.push({ ts: c, kind: 'opened', title, iid, who: raw.author?.name || '', url, notes })
-    if (cl) ev.push({ ts: cl, kind: 'closed', title, iid, who: raw.closed_by?.name || '', url, notes })
+    if (c) ev.push({ ts: c, kind: 'opened', title, iid, id, reference, who: raw.author?.name || '', url, notes })
+    if (cl) ev.push({ ts: cl, kind: 'closed', title, iid, id, reference, who: raw.closed_by?.name || '', url, notes })
     // `updated_at` is GitLab's catch-all "last activity" timestamp (covers comments,
     // label changes, assignment changes, edits, etc.). Skip when it matches another
     // event we already emitted so we don't get duplicate rows on freshly-created or
     // just-closed tickets.
     if (includeUpdates && u && u !== c && u !== cl) {
-      ev.push({ ts: u, kind: 'updated', title, iid, who: '', url, notes })
+      ev.push({ ts: u, kind: 'updated', title, iid, id, reference, who: '', url, notes })
     }
   }
   ev.sort((a, b) => b.ts - a.ts)
@@ -3294,6 +3303,7 @@ const blockers = computed(() => {
     const ageDays = created ? Math.max(0, Math.floor((now - created) / day)) : 0
     if (maxAge > 0 && ageDays > maxAge) continue
     out.push({
+      id: n.id, reference: issueReference(n, n.inSelectedGroup),
       iid: raw.iid != null ? String(raw.iid) : '',
       title: raw.title || n.name,
       url: raw.web_url || '',
@@ -3326,6 +3336,7 @@ const wipStale = computed(() => {
     const upd = safeDate(raw.updated_at) || safeDate(raw.created_at) || 0
     if (!upd || upd >= cutoff) continue
     out.push({
+      id: n.id, reference: issueReference(n, n.inSelectedGroup),
       iid: raw.iid != null ? String(raw.iid) : '',
       title: raw.title || n.name,
       url: raw.web_url || '',
@@ -3351,6 +3362,7 @@ const closedRecently = computed(() => {
     if (!cl || cl < cutoff) continue
     out.push({
       ts: cl,
+      id: n.id, reference: issueReference(n, n.inSelectedGroup),
       iid: raw.iid != null ? String(raw.iid) : '',
       title: raw.title || n.name,
       url: raw.web_url || '',
@@ -3444,7 +3456,7 @@ const leaderboardHasData = computed(() => leaderboardCategories.value.some(c => 
 const risksCfg = computed(() => settings.uiState.kiosk?.modeConfig?.risks || {})
 const PROBLEM_WEIGHTS  = { overdue: 3, blocked: 3, stale: 2, unassigned: 1, noPriority: 1, noDueDate: 1 }
 const PROBLEM_COLORS   = { overdue: '#ef5350', blocked: '#ef5350', stale: '#ffb300', unassigned: '#ffb300', noPriority: '#90a4ae', noDueDate: '#90a4ae' }
-const PROBLEM_LABELS   = { overdue: 'Overdue', stale: 'Stale', unassigned: 'Unassigned', noPriority: 'No priority', noDueDate: 'No due date', blocked: 'Blocked' }
+const PROBLEM_LABELS   = { overdue: 'Overdue', stale: 'Stale', unassigned: 'Unassigned', noPriority: 'No priority', noDueDate: 'No due date', blocked: 'Attention' }
 const PROBLEM_ICONS    = { overdue: 'mdi-calendar-alert', stale: 'mdi-timer-sand', unassigned: 'mdi-account-off-outline', noPriority: 'mdi-alert-circle-outline', noDueDate: 'mdi-calendar-question', blocked: 'mdi-cancel' }
 
 const risks = computed(() => {
@@ -3478,7 +3490,8 @@ const risks = computed(() => {
 
     if (problems.length >= 2) {
       offenders.push({
-        iid: raw.iid != null ? String(raw.iid) : '',
+        id: n.id, reference: issueReference(n, n.inSelectedGroup),
+      iid: raw.iid != null ? String(raw.iid) : '',
         title: raw.title || n.name,
         url: raw.web_url || '',
         priority: priorityVal,
@@ -3600,16 +3613,17 @@ const broken = computed(() => {
     }
 
     if (problems.length) {
-      const iid = raw.iid != null ? String(raw.iid) : ''
+      const id = n.id, reference = issueReference(n, n.inSelectedGroup)
+    const iid = raw.iid != null ? String(raw.iid) : ''
       const title = raw.title || n.name
       const url = raw.web_url || ''
       // Per-kind drill-down lists (used by card hover tooltips + the Evergreen popover).
       for (const p of problems) {
         const arr = ticketsByKind[p.kind]
-        if (arr && arr.length < BROKEN_KIND_CAP) arr.push({ iid, title, url, detail: p.detail })
+        if (arr && arr.length < BROKEN_KIND_CAP) arr.push({ id, reference, iid, title, url, detail: p.detail })
       }
       offenders.push({
-        iid, title, url,
+        id, reference, iid, title, url,
         milestone: milestoneTitle,
         priority: priorityVal,
         assignees,
@@ -3633,7 +3647,7 @@ const broken = computed(() => {
 const iidListShort = (tickets, max = 14) => {
   const list = Array.isArray(tickets) ? tickets : []
   if (!list.length) return 'No tickets'
-  const head = list.slice(0, max).map(t => `#${t.iid}`).join(', ')
+  const head = list.slice(0, max).map(t => t.reference || `#${t.iid}`).join(', ')
   return list.length > max ? `${head}  (+${list.length - max} more)` : head
 }
 const brokenCardTitle = (kind, hint) => {
@@ -3763,7 +3777,7 @@ const filterLostMilestone = () => {
 // we deep-link by exact iid list and open the list view since that's the right
 // shape for "browse these specific tickets".
 const filterEvergreen = () => {
-  const iids = (broken.value.ticketsByKind.evergreen || []).map(t => t.iid).filter(Boolean)
+  const iids = (broken.value.ticketsByKind.evergreen || []).map(t => t.id).filter(Boolean)
   if (!iids.length) return
   applyFilter({ selectedIids: iids, layout: 'list', includeClosed: true })
 }

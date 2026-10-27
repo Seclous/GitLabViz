@@ -317,14 +317,14 @@ function getShorthand (node) {
   const full = r.references && typeof r.references.full === 'string' ? r.references.full : ''
   if (full) return full
   const rel = r.references && typeof r.references.relative === 'string' ? r.references.relative : ''
-  const pid = String(settings?.config?.projectId || '').trim()
+  const pid = String(node?.projectPath || settings?.config?.projectId || '').trim()
   if (rel) {
     if (!pid) return rel
     if (rel.includes('/')) return rel
     if (rel.startsWith('#')) return `${pid}${rel}`
     return `${pid}#${rel.replace(/^#/, '')}`
   }
-  const id = node && node.id != null ? String(node.id) : ''
+  const id = node && node.id != null ? String(node._raw?.iid ?? node.iid ?? node.id) : ''
   return (pid && id) ? `${pid}#${id}` : ''
 }
 function getSummary (node) {
@@ -356,17 +356,17 @@ async function onCopySummary () { await copyText(getSummary(props.node)); close(
 
 function onToggleClosed () {
   if (!ctxIid.value || !canWrite.value) return
-  emit('issue-state-change', { iid: ctxIid.value, state_event: stateActionEvent.value })
+  emit('issue-state-change', { nodeId: props.node?.id, projectId: props.node?.projectId, iid: ctxIid.value, state_event: stateActionEvent.value })
   close()
 }
 function onAssignToMe () {
   if (!ctxIid.value || !canWrite.value || !meId.value) return
-  emit('issue-assignee-change', { iid: ctxIid.value, assignee_ids: [meId.value] })
+  emit('issue-assignee-change', { nodeId: props.node?.id, projectId: props.node?.projectId, iid: ctxIid.value, assignee_ids: [meId.value] })
   close()
 }
 function onUnassign () {
   if (!ctxIid.value || !canWrite.value) return
-  emit('issue-assignee-change', { iid: ctxIid.value, assignee_ids: [] })
+  emit('issue-assignee-change', { nodeId: props.node?.id, projectId: props.node?.projectId, iid: ctxIid.value, assignee_ids: [] })
   close()
 }
 function onOpenTicket () {

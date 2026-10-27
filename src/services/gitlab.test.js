@@ -281,16 +281,9 @@ describe('gitlab service', () => {
     expect(result).toEqual([{ id: 2 }]);
   });
 
-  it('fetchIssueLinks returns empty array on error', async () => {
-    const mockClient = {
-      get: vi.fn().mockRejectedValue(new Error('Link Error')),
-    };
-    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    const result = await fetchIssueLinks(mockClient, mockProjectId, mockIssueId);
-
-    expect(result).toEqual([]);
-    expect(consoleSpy).toHaveBeenCalled();
+  it('fetchIssueLinks reports errors so unavailable links are not cached as empty', async () => {
+    const mockClient = { get: vi.fn().mockRejectedValue(new Error('Link Error')) };
+    await expect(fetchIssueLinks(mockClient, mockProjectId, mockIssueId)).rejects.toThrow('Link Error');
   });
 
   it('fetchProjectIssues retries on 429 and succeeds', async () => {

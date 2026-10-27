@@ -1,4 +1,6 @@
 import { toRaw, watch } from 'vue'
+import { issueKey, normalizeIssueIdentity, issueReference } from '../utils/issueIdentity'
+import { getGitLabSource, gitlabSourceCacheKey, readGitLabSourceCache, writeGitLabSourceCache, clearGitLabSourceCache } from '../services/gitlabSourceCache'
 import localforage from 'localforage'
 import {
   createGitLabClient,
@@ -7,7 +9,8 @@ import {
   enrichEpicTitlesFromRest,
   enrichIssuesFromGraphql,
   fetchProjectIssuesRest,
-  fetchIssueLinks,
+  fetchGroupIssuesRest,
+  fetchGroupProjects,
   fetchIssueResourceMilestoneEvents,
   fetchTokenInfo,
   getNetworkFailureCount,
@@ -30,6 +33,9 @@ import { getScopedLabelValue } from '../utils/scopedLabels'
 const slimIssue = (i) => {
   if (!i) return i
   const slim = {
+    id: i.id,
+    project_id: i.project_id,
+    work_item_gid: i.work_item_gid,
     iid: i.iid,
     title: i.title,
     state: i.state,
@@ -93,7 +99,7 @@ export function useDataLoader ({
 }) {
   // Some config changes (notably gitlabClosedDays) widen the fetch window such that the
   // incremental sync would skip the newly-included history. The primary mechanism is
-  // comparing the current setting to `settings.meta.lastSyncClosedDays` inside loadData;
+  // comparing the current setting to `gitlabCacheMeta.value.lastSyncClosedDays` inside loadData;
   // this watcher is a belt-and-braces flag for changes that happen mid-session.
   let pendingFullSync = false
   watch(() => settings.config.gitlabClosedDays, (newVal, oldVal) => {
@@ -114,11 +120,25 @@ export function useDataLoader ({
     return direct
   }
 
+  const clearIssueState = () => {
+    for (const map of [nodes, edges, issueGraphSnapshot.nodes, issueGraphSnapshot.edges]) {
+      for (const key in map) delete map[key]
+    }
+    gitlabCacheMeta.value = {}
+  }
+
+  let cacheRestoreRevision = 0
   const initCachedData = async () => {
+    const revision = ++cacheRestoreRevision
     try {
-      const cachedMeta = await localforage.getItem('gitlab_meta')
+      const config = { ...settings.config }
+      const cache = await readGitLabSourceCache(config)
+      if (revision !== cacheRestoreRevision || gitlabSourceCacheKey(config) !== gitlabSourceCacheKey(settings.config)) return
+      clearIssueState()
+      const cachedMeta = cache?.meta
       if (cachedMeta && typeof cachedMeta === 'object') {
         gitlabCacheMeta.value = {
+          ...cachedMeta,
           nodes: cachedMeta.nodes || 0,
           edges: cachedMeta.edges || 0,
           updatedAt: cachedMeta.updatedAt || null,
@@ -128,8 +148,8 @@ export function useDataLoader ({
           apiBaseUrl: cachedMeta.apiBaseUrl || null
         }
       }
-      const cachedNodes = await localforage.getItem('gitlab_nodes')
-      const cachedEdges = await localforage.getItem('gitlab_edges')
+      const cachedNodes = cache?.nodes
+      const cachedEdges = cache?.edges
 
       // Load lastUpdated from settings
       if (settings.meta && settings.meta.lastUpdated) lastUpdated.value = settings.meta.lastUpdated
@@ -178,6 +198,12 @@ export function useDataLoader ({
       console.error('Failed to load cached data:', e)
     }
   }
+
+  watch(() => gitlabSourceCacheKey(settings.config), () => {
+    pendingFullSync = true
+    clearIssueState()
+    void initCachedData()
+  })
 
   const updateAllSvnCaches = async (override) => {
     if (!isElectron.value) {
@@ -241,6 +267,7 @@ export function useDataLoader ({
     // Do not start another fetch while one is already running (no queueing).
     // Set the flag synchronously to close the TOCTOU window before the first await.
     if (loading.value) return
+    cacheRestoreRevision++
     loading.value = true
 
     // Check for app updates (hosted builds) before re-fetching data.
@@ -257,7 +284,7 @@ export function useDataLoader ({
     // If the closed-days window has changed since the last successful sync, the cached
     // cursor would miss the newly-included closed history — force a full re-sync.
     const curClosedDays = Number(settings.config.gitlabClosedDays) || 0
-    const lastSyncClosedDays = settings.meta && settings.meta.lastSyncClosedDays
+    const lastSyncClosedDays = gitlabCacheMeta.value?.lastSyncClosedDays
     if (typeof lastSyncClosedDays === 'number' && lastSyncClosedDays !== curClosedDays) {
       forceFull = true
     }
@@ -269,8 +296,17 @@ export function useDataLoader ({
 
     const bail = (msg) => { error.value = msg; loading.value = false }
 
-    if (doGitLab && (!settings.config.token || !settings.config.projectId || !gitlabApiBaseUrl)) {
-      return bail('Please provide GitLab URL, Token, and Project ID')
+    const sourceConfig = { ...settings.config }
+    const source = getGitLabSource(sourceConfig)
+    const ensureCurrentSource = () => {
+      if (gitlabSourceCacheKey(sourceConfig) !== gitlabSourceCacheKey(settings.config)) throw new Error('GitLab source changed; refresh the selected source.')
+    }
+    let projectDirectory = {}
+    const fetchSourceIssues = async (client, _projectId, progress, options) => source.kind === 'group'
+      ? fetchGroupIssuesRest(client, source, projectDirectory, progress, options)
+      : fetchProjectIssuesRest(client, source.idOrPath, progress, options)
+    if (doGitLab && (!settings.config.token || !source.idOrPath || !gitlabApiBaseUrl)) {
+      return bail('Please provide GitLab URL, Token, and a Project or Group ID')
     }
     if (doSvn && !svnUrl.value) {
       return bail('Please provide SVN URL')
@@ -297,14 +333,8 @@ export function useDataLoader ({
     }
 
     // Incremental GitLab sync (skip existing data) if cache matches this project.
-    const cachedProjectId = String(gitlabCacheMeta.value?.projectId || '').trim()
-    const cachedApiBaseUrl = String(gitlabCacheMeta.value?.apiBaseUrl || '').trim()
-    const cachedCursor = String(gitlabCacheMeta.value?.syncCursor || gitlabCacheMeta.value?.updatedAt || '').trim()
-    const sameGitlabCacheIdentity =
-      !!cachedProjectId &&
-      !!cachedApiBaseUrl &&
-      cachedProjectId === String(settings.config.projectId || '').trim() &&
-      cachedApiBaseUrl === String(gitlabApiBaseUrl || '').trim()
+    const cachedCursor = String(gitlabCacheMeta.value?.syncCursor || '').trim()
+    const sameGitlabCacheIdentity = gitlabCacheMeta.value?.sourceKey === gitlabSourceCacheKey(settings.config)
     let canIncrementalGitLab = doGitLab && sameGitlabCacheIdentity && !!cachedCursor
     if (forceFull) canIncrementalGitLab = false
 
@@ -382,9 +412,10 @@ export function useDataLoader ({
             settings.meta.gitlabCanWrite = false
           }
 
+          if (source.kind === 'group') projectDirectory = await fetchGroupProjects(restClient, source)
           if (updatedAfter) {
             // Incremental sync must include state transitions (opened <-> closed), not just new opened issues.
-            const updated = await fetchProjectIssuesRest(
+            const updated = await fetchSourceIssues(
               restClient,
               settings.config.projectId,
               (msg) => {
@@ -405,7 +436,7 @@ export function useDataLoader ({
             })()
             issues = updated.filter(i => {
               if (!i || i.iid == null) return false
-              const id = String(i.iid)
+              const id = issueKey(i, source.idOrPath)
               const exists = !!nodes[id]
               if (i.state !== 'closed') return true
               if (exists) return true
@@ -418,7 +449,7 @@ export function useDataLoader ({
             }
           } else {
             // Full fetch: opened issues (REST: fast + includes epic_iid)
-            issues = await fetchProjectIssuesRest(
+            issues = await fetchSourceIssues(
               restClient,
               settings.config.projectId,
               (msg) => {
@@ -440,7 +471,7 @@ export function useDataLoader ({
                 return new Date(Math.max(closedAfterMs, updatedAfterMs)).toISOString()
               })()
 
-              const closedIssues = await fetchProjectIssuesRest(
+              const closedIssues = await fetchSourceIssues(
                 restClient,
                 settings.config.projectId,
                 (msg) => {
@@ -467,7 +498,7 @@ export function useDataLoader ({
           }
 
           // Optional GraphQL enrichment pass for fields REST doesn't provide (kept minimal).
-          if (gqlClient) {
+          if (gqlClient && source.kind === 'project') {
             // Backfill custom fields for unchanged issues from caches written before
             // custom-field support, without requiring a full REST sync.
             const fetchedIids = new Set(issues.map(i => String(i.iid)))
@@ -480,15 +511,14 @@ export function useDataLoader ({
               updateStatus.value = { loading: true, source: 'gitlab', message: msg }
             })
           }
-          if (restClient) {
+          if (restClient && source.kind === 'project') {
             await enrichEpicTitlesFromRest(restClient, settings.config.projectId, issues, (msg) => {
               loadingMessage.value = msg
               updateStatus.value = { loading: true, source: 'gitlab', message: msg }
             })
           }
 
-          didGitLabFetch = true
-          gitlabSyncCursorForSave = startedCursor
+          ensureCurrentSource()
 
           // Create nodes
           loadingMessage.value = 'Building graph\ncreating nodes…'
@@ -496,8 +526,9 @@ export function useDataLoader ({
           // Only replace the whole dataset when we got a full (non-partial) fetch.
           // If partial, merge into existing nodes/edges instead (resume-friendly).
           const isPartial = !!issues?.__glvPartial
+          gitlabSyncCursorForSave = isPartial ? cachedCursor : startedCursor
           // For Ctrl+Click (force full clean), never merge partial results into existing data.
-          if (forceFull && isPartial) {
+          if ((forceFull || !sameGitlabCacheIdentity) && isPartial) {
             throw new Error('GitLab fetch interrupted (partial). Retry (Ctrl+Click again) to complete the clean update.')
           }
           if (replaceGitLabDataOnSuccess && !isPartial) {
@@ -505,8 +536,10 @@ export function useDataLoader ({
             for (const key in edges) delete edges[key]
           }
 
+          didGitLabFetch = true
           issues.forEach(issue => {
-            const id = String(issue.iid)
+            const identity = normalizeIssueIdentity(issue, source, projectDirectory)
+            const id = identity.id
 
             // Calculate time spent ratio if available
             let timeSpentRatio = 0
@@ -528,8 +561,8 @@ export function useDataLoader ({
             else if (status === 'Won\'t do' || status === 'Duplicate') color = '#dc3545'
 
             nodes[id] = {
-              id,
-              name: `#${id} ${issue.title.length > 20 ? issue.title.substring(0, 20) + '...' : issue.title}`,
+              ...identity,
+              name: `${issueReference(identity, source.kind === 'group')} ${issue.title.length > 20 ? issue.title.substring(0, 20) + '...' : issue.title}`,
               color,
               commentsCount: issue.user_notes_count,
               updatedAt: issue.updated_at,
@@ -553,7 +586,7 @@ export function useDataLoader ({
           })
 
           // Persist sync cursor (conservative watermark) for next incremental run
-          settings.meta.gitlabSyncCursor = startedCursor
+          settings.meta.gitlabSyncCursor = gitlabSyncCursorForSave
         } catch (e) {
           console.error(e)
           error.value = `GitLab Error: ${describeGitLabRequestError(e)}`
@@ -605,6 +638,7 @@ export function useDataLoader ({
               loadingMessage.value = msg.includes('\n') ? msg : `SVN log\n${msg}`
             },
             onPage: async (pageCommits) => {
+              ensureCurrentSource()
               // keep a small slice in memory for SVN tree
               for (const c of pageCommits) {
                 if (svnRecentCommits.value.length >= maxKeep) break
@@ -620,8 +654,8 @@ export function useDataLoader ({
                 let shouldCreateNode = false
                 const matchedIssueIds = []
                 for (const match of issueMatches) {
-                  const issueId = match[1]
-                  if (nodes[issueId]) {
+                  const issueId = source.kind === 'project' ? Object.values(nodes).find(n => String(n._raw?.iid) === match[1])?.id : null
+                  if (issueId && nodes[issueId]) {
                     shouldCreateNode = true
                     matchedIssueIds.push(issueId)
                   }
@@ -669,88 +703,7 @@ export function useDataLoader ({
         }
       }
 
-      // Fetch links for each issue with concurrency limit
-      if (settings.config.enableGitLab && issues.length > 0) {
-        loadingMessage.value = 'Issue links\nstarting…'
-        let completedLinks = 0
-        const CONCURRENCY_LIMIT = 20
-        const linksResults = new Array(issues.length)
-        let nextIssueIndex = 0
-
-        // Incremental sync: remove old GitLab issue-link edges for updated issues only.
-        if (doGitLab && canIncrementalGitLab) {
-          const touched = new Set(issues.map(i => String(i?.iid || '')).filter(Boolean))
-          const isIssueId = (v) => /^\d+$/.test(String(v || ''))
-          for (const k in edges) {
-            const e = edges[k]
-            if (!e) continue
-            const a = String(e.source || '')
-            const b = String(e.target || '')
-            if (!isIssueId(a) || !isIssueId(b)) continue // keep SVN edges, etc.
-            if (touched.has(a) || touched.has(b)) delete edges[k]
-          }
-        }
-
-        const fetchWorker = async () => {
-          while (nextIssueIndex < issues.length) {
-            const index = nextIssueIndex++
-            const issue = issues[index]
-            try {
-              linksResults[index] = await fetchIssueLinks(restClient, settings.config.projectId, issue.iid)
-            } catch (e) {
-              linksResults[index] = []
-            }
-            completedLinks++
-            if (completedLinks % 10 === 0 || completedLinks === issues.length) {
-              loadingMessage.value = `Issue links\n${completedLinks} / ${issues.length} · ${Math.round((completedLinks / issues.length) * 100)}%`
-            }
-          }
-        }
-
-        await Promise.all(Array.from({ length: CONCURRENCY_LIMIT }, fetchWorker))
-
-        loadingMessage.value = 'Issue links\nprocessing…'
-        linksResults.forEach((links, index) => {
-          const sourceIssue = issues[index]
-          const sourceId = String(sourceIssue.iid)
-
-          if (links && links.length > 0) {
-            links.forEach(link => {
-              const targetId = String(link.iid)
-
-              // Avoid duplicate edges (A->B and B->A)
-              const rawType = String(link.link_type || 'related')
-              const t = rawType.toLowerCase()
-              let a = sourceId
-              let b = targetId
-              let label = rawType
-
-              // Normalize direction so arrows can be meaningful:
-              // - blocks: blocker -> blocked
-              // - is_blocked_by: flip to blocker -> blocked, but keep a readable label
-              if (t === 'is_blocked_by' || t === 'blocked_by') {
-                a = targetId
-                b = sourceId
-                label = 'blocks'
-              } else if (t === 'blocks') {
-                a = sourceId
-                b = targetId
-                label = 'blocks'
-              } else if (t === 'relates' || t === 'relates_to' || t === 'related') {
-                // undirected-ish: keep stable ordering
-                if (a > b) { const tmp = a; a = b; b = tmp }
-                label = 'relates'
-              }
-
-              const edgeId = `${a}-${b}-${label}`
-
-              if (nodes[b] && !edges[edgeId]) {
-                edges[edgeId] = { source: a, target: b, label }
-              }
-            })
-          }
-        })
-      }
+      // Issue links are indexed independently by useIssueRelationships.
 
       // Milestone history enrichment — fetches `resource_milestone_events` for every
       // ticket that currently has a milestone (open OR closed) so we know the actual
@@ -761,7 +714,7 @@ export function useDataLoader ({
       //      moved between milestones mid-flight, inflating the perceived scope creep).
       // Re-runs only for fetched (updated) issues; cached events on other nodes are
       // preserved via `slimIssue` so first-load cost amortises across sessions.
-      if (doGitLab && restClient && issues.length > 0) {
+      if (doGitLab && source.kind === 'project' && restClient && issues.length > 0) {
         const candidates = issues.filter(i => i && i.iid != null && i.milestone)
         if (candidates.length > 0) {
           loadingMessage.value = `Milestone history\n0 / ${candidates.length}`
@@ -772,7 +725,7 @@ export function useDataLoader ({
             while (next < candidates.length) {
               const i = next++
               const issue = candidates[i]
-              const raw = await fetchIssueResourceMilestoneEvents(restClient, settings.config.projectId, issue.iid)
+              const raw = await fetchIssueResourceMilestoneEvents(restClient, issue.project_id || source.idOrPath, issue.iid)
               const events = []
               const seen = new Set()
               for (const e of raw) {
@@ -785,7 +738,8 @@ export function useDataLoader ({
                 if (action === 'add' && e?.milestone?.id != null) seen.add(e.milestone.id)
               }
               events.sort((a, b) => a.ts - b.ts)
-              const node = nodes[String(issue.iid)]
+              ensureCurrentSource()
+              const node = nodes[issueKey(issue, source.idOrPath)]
               if (node && node._raw) {
                 node._raw.milestoneEvents = events
                 node._raw.milestone_move_count = Math.max(0, seen.size - 1)
@@ -802,6 +756,7 @@ export function useDataLoader ({
 
       // Save to cache (IndexedDB via localforage)
       try {
+        ensureCurrentSource()
         // Persist current "issues" view snapshot (never persist SVN rev-tree)
         for (const k in issueGraphSnapshot.nodes) delete issueGraphSnapshot.nodes[k]
         for (const k in issueGraphSnapshot.edges) delete issueGraphSnapshot.edges[k]
@@ -809,28 +764,26 @@ export function useDataLoader ({
         Object.assign(issueGraphSnapshot.edges, toRaw(edges))
 
         if (doGitLab && didGitLabFetch) {
-          await localforage.setItem('gitlab_nodes', toRaw(nodes))
-          await localforage.setItem('gitlab_edges', toRaw(edges))
           const now = Date.now()
-          const syncCursor = String(gitlabSyncCursorForSave || settings.meta.gitlabSyncCursor || '') || new Date(now).toISOString()
+          ensureCurrentSource()
+          const syncCursor = gitlabSyncCursorForSave || null
           const meta = {
             nodes: Object.keys(nodes).length,
             edges: Object.keys(edges).length,
             updatedAt: now,
             syncCursor,
+            lastSyncClosedDays: curClosedDays,
             projectId: String(settings.config.projectId || '').trim(),
             apiBaseUrl: String(gitlabApiBaseUrl || '').trim()
           }
-          await localforage.setItem('gitlab_meta', meta)
-          gitlabCacheMeta.value = meta
+          const savedMeta = await writeGitLabSourceCache(sourceConfig, { nodes: toRaw(nodes), edges: toRaw(edges), projects: projectDirectory, meta })
+          ensureCurrentSource()
+          gitlabCacheMeta.value = savedMeta
         }
         const now = Date.now()
         lastUpdated.value = now
         settings.meta.lastUpdated = now
-        // Remember the closed-days window we just synced under, so a later change
-        // to `gitlabClosedDays` is detected at the top of loadData and triggers a
-        // full re-sync without the user needing Ctrl+Refresh.
-        settings.meta.lastSyncClosedDays = Number(settings.config.gitlabClosedDays) || 0
+
       } catch (e) {
         console.error('Failed to save to cache:', e)
         error.value = `Failed to save to cache: ${e?.message || String(e)}`
@@ -900,9 +853,7 @@ export function useDataLoader ({
     const source = payload
     if (source === 'gitlab') {
       if (!confirm('Delete GitLab cache (nodes/edges)?')) return
-      await localforage.removeItem('gitlab_nodes')
-      await localforage.removeItem('gitlab_edges')
-      await localforage.removeItem('gitlab_meta')
+      await clearGitLabSourceCache(settings.config)
       gitlabCacheMeta.value = { nodes: 0, edges: 0, updatedAt: null }
       for (const k in nodes) delete nodes[k]
       for (const k in edges) delete edges[k]

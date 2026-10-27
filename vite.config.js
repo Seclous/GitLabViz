@@ -3,6 +3,8 @@ import vue from '@vitejs/plugin-vue'
 import vuetify from 'vite-plugin-vuetify'
 import { viteSingleFile } from 'vite-plugin-singlefile'
 import { execSync } from 'node:child_process'
+import { copyFileSync, renameSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 // Read package version
 import pkg from './package.json'
@@ -91,8 +93,26 @@ export default defineConfig(({ mode }) => {
       // which Node can't load. For unit tests we don't need Vuetify, so skip the plugin.
       ...(isVitest ? [] : [vuetify({ autoImport: true })]),
       viteSingleFile(),
-      currentVersionPlugin()
+      currentVersionPlugin(),
+      {
+        name: 'gitlabviz-html-entry',
+        enforce: 'post',
+        configureServer(server) {
+          server.middlewares.use((req, _res, next) => {
+            if (/^\/(?:index\.html)?(?:\?|$)/.test(req.url || '')) {
+              req.url = req.url.replace(/^\/(?:index\.html)?/, '/app.html')
+            }
+            next()
+          })
+        },
+        writeBundle(options) {
+          const output = resolve(options.dir || 'dist')
+          renameSync(resolve(output, 'app.html'), resolve(output, 'index.html'))
+          copyFileSync(resolve(output, 'index.html'), resolve('index.html'))
+        }
+      }
     ],
+    build: { rollupOptions: { input: resolve('app.html') } },
     define: {
       '__APP_VERSION__': JSON.stringify(pkg.version),
       '__BUILD_TIME__': JSON.stringify(buildTime),

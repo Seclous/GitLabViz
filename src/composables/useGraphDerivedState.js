@@ -1,3 +1,4 @@
+import { migrateIssueSelection } from '../utils/issueIdentity'
 import { computed, watch } from 'vue'
 import { getScopedLabelValue, getScopedLabelValues, isScopedLabel } from '../utils/scopedLabels'
 import { getAssigneeNames, resolveAssigneeFilter, filterAssigneeKeys, getIssuePriority, getIssuePriorityValues } from '../utils/issueFields'
@@ -14,6 +15,12 @@ export const currentStatusOfRaw = (raw) => {
 }
 
 export function useGraphDerivedState ({ settings, nodes, edges }) {
+  watch(() => [Object.keys(nodes).join('|'), settings.config?.gitlabSourceKind, settings.uiState.filters.selectedIids], () => {
+    const previous = settings.uiState.filters.selectedIids
+    if (!previous?.length || !Object.keys(nodes).length) return
+    const migrated = migrateIssueSelection(previous, nodes, settings.config?.gitlabSourceKind)
+    if (JSON.stringify(previous) !== JSON.stringify(migrated)) settings.uiState.filters.selectedIids = migrated
+  }, { immediate: true })
   const allLabels = computed(() => {
     const labels = new Set()
     Object.values(nodes).forEach(node => {
@@ -393,12 +400,12 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
       const query = String(f.searchQuery || '').trim().toLowerCase()
       const m = query.match(/^#?(\d+)$/)
       if (m && m[1]) {
-        if (String(node.id) !== String(m[1])) return false
+        if (String(r.iid ?? node.iid ?? node.id) !== String(m[1])) return false
       } else {
         const jiraMatch = r.title ? r.title.match(/^\[([A-Z]+-\d+)\]/) : null
         const jiraId = jiraMatch ? jiraMatch[1] : ''
         const hay = [
-          r.title, r.description, String(node.id), `#${node.id}`, jiraId,
+          r.title, r.description, node.fullReference, r.references?.full, node.projectPath, String(node.id), `#${r.iid ?? node.id}`, jiraId,
           r.author?.name, r.assignee?.name,
           ...(r.assignees || []).map(a => a.name),
           r.milestone?.title,
@@ -472,8 +479,13 @@ export function useGraphDerivedState ({ settings, nodes, edges }) {
     const result = {}
     const empty = new Set()
     Object.values(nodes).forEach(node => {
-      if (passesFilters(node, empty)) result[node.id] = node
+      if (!node.externalContext && passesFilters(node, empty)) result[node.id] = node
     })
+    // External context accompanies a visible endpoint; it is not a new slice seed.
+    for (const edge of Object.values(edges)) {
+      if (result[edge.source] && nodes[edge.target]?.externalContext) result[edge.target] = nodes[edge.target]
+      if (result[edge.target] && nodes[edge.source]?.externalContext) result[edge.source] = nodes[edge.source]
+    }
     return result
   })
 

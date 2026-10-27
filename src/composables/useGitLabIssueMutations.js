@@ -9,8 +9,12 @@ export function useGitLabIssueMutations ({
   snackbarText,
   snackbar
 }) {
-  const onIssueStateChange = async ({ iid, state_event } = {}) => {
-    const issueIid = String(iid || '').trim()
+  const onIssueStateChange = async ({ nodeId, iid, projectId, state_event } = {}) => {
+    const key = nodeId || (settings.config.gitlabSourceKind !== 'group' ? Object.keys(nodes).find(k => String(nodes[k]?._raw?.iid ?? nodes[k]?.id) === String(iid)) : null)
+    const node = nodes[key]
+    const ownProject = node?.projectId || node?._raw?.project_id || projectId || (settings.config.gitlabSourceKind !== 'group' ? settings.config.projectId : null)
+    const issueIid = String(node?._raw?.iid || iid || '').trim()
+    if (!node || !ownProject) return
     const ev = String(state_event || '').trim()
     if (!issueIid || (ev !== 'close' && ev !== 'reopen')) return
 
@@ -21,15 +25,15 @@ export function useGitLabIssueMutations ({
     if (!settings.config.enableGitLab) return
 
     const baseUrl = resolveGitLabApiBaseUrl()
-    if (!baseUrl || !settings.config.projectId || !settings.config.token) {
+    if (!baseUrl || !ownProject || !settings.config.token) {
       alert('Missing GitLab URL / Project / Token.')
       return
     }
 
     try {
       const client = createGitLabClient(baseUrl, settings.config.token)
-      const prev = nodes[issueIid]?._raw || null
-      const updated = await updateIssue(client, settings.config.projectId, issueIid, { state_event: ev })
+      const prev = nodes[key]?._raw || null
+      const updated = await updateIssue(client, ownProject, issueIid, { state_event: ev })
       // REST update responses can omit fields we rely on for grouping (ex: epic/iteration).
       if (updated && prev) {
         if (updated.epic == null && prev.epic) updated.epic = prev.epic
@@ -37,7 +41,7 @@ export function useGitLabIssueMutations ({
         if (updated.iteration == null && prev.iteration) updated.iteration = prev.iteration
       }
       if (issueGraph.value && issueGraph.value.markDataOnlyUpdate) issueGraph.value.markDataOnlyUpdate()
-      if (nodes[issueIid]) nodes[issueIid]._raw = slimIssue(updated)
+      if (nodes[key]) nodes[key]._raw = slimIssue({ ...prev, ...updated })
       snackbarText.value = ev === 'close' ? `Closed #${issueIid}` : `Reopened #${issueIid}`
       snackbar.value = true
     } catch (e) {
@@ -47,8 +51,12 @@ export function useGitLabIssueMutations ({
     }
   }
 
-  const onIssueAssigneeChange = async ({ iid, assignee_ids } = {}) => {
-    const issueIid = String(iid || '').trim()
+  const onIssueAssigneeChange = async ({ nodeId, iid, projectId, assignee_ids } = {}) => {
+    const key = nodeId || (settings.config.gitlabSourceKind !== 'group' ? Object.keys(nodes).find(k => String(nodes[k]?._raw?.iid ?? nodes[k]?.id) === String(iid)) : null)
+    const node = nodes[key]
+    const ownProject = node?.projectId || node?._raw?.project_id || projectId || (settings.config.gitlabSourceKind !== 'group' ? settings.config.projectId : null)
+    const issueIid = String(node?._raw?.iid || iid || '').trim()
+    if (!node || !ownProject) return
     const list = Array.isArray(assignee_ids) ? assignee_ids : null
     if (!issueIid || !list) return
 
@@ -59,15 +67,15 @@ export function useGitLabIssueMutations ({
     if (!settings.config.enableGitLab) return
 
     const baseUrl = resolveGitLabApiBaseUrl()
-    if (!baseUrl || !settings.config.projectId || !settings.config.token) {
+    if (!baseUrl || !ownProject || !settings.config.token) {
       alert('Missing GitLab URL / Project / Token.')
       return
     }
 
     try {
       const client = createGitLabClient(baseUrl, settings.config.token)
-      const prev = nodes[issueIid]?._raw || null
-      const updated = await updateIssue(client, settings.config.projectId, issueIid, { assignee_ids: list })
+      const prev = nodes[key]?._raw || null
+      const updated = await updateIssue(client, ownProject, issueIid, { assignee_ids: list })
 
       // Keep the rest of the app consistent (some parts use _raw.assignee directly).
       if (updated) {
@@ -83,7 +91,7 @@ export function useGitLabIssueMutations ({
       }
 
       if (issueGraph.value && issueGraph.value.markDataOnlyUpdate) issueGraph.value.markDataOnlyUpdate()
-      if (nodes[issueIid]) nodes[issueIid]._raw = slimIssue(updated)
+      if (nodes[key]) nodes[key]._raw = slimIssue({ ...prev, ...updated })
       snackbarText.value = list.length ? `Assigned #${issueIid}` : `Unassigned #${issueIid}`
       snackbar.value = true
     } catch (e) {

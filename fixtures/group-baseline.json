@@ -1,0 +1,28 @@
+{
+  "description": "Synthetic data only. Duplicate project-local IIDs, subgroup and external context for staged group tests.",
+  "group": "example/core",
+  "projects": [
+    { "id": 101, "path_with_namespace": "example/core/app" },
+    { "id": 102, "path_with_namespace": "example/core/sub/api" },
+    { "id": 103, "path_with_namespace": "example/core/tools" },
+    { "id": 104, "path_with_namespace": "other/context" }
+  ],
+  "issues": [
+    { "id": 1001, "project_id": 101, "iid": 42, "title": "App blocker", "state": "opened", "labels": ["TYPE::Bug", "priority::Low"], "custom_field_values": [{ "custom_field": { "name": "pRiOrItY" }, "value": "Critical" }], "assignees": [], "references": { "full": "example/core/app#42" } },
+    { "id": 1002, "project_id": 101, "iid": 43, "title": "Closed app issue", "state": "closed", "labels": ["Type::Feature", "PRIORITY::Low"], "assignees": [], "references": { "full": "example/core/app#43" } },
+    { "id": 2001, "project_id": 102, "iid": 42, "title": "API dependency", "state": "opened", "labels": ["type::Task"], "custom_field_values": [{ "custom_field": { "name": "Priority" }, "selected_options": [{ "value": "High" }] }], "assignees": [], "references": { "full": "example/core/sub/api#42" } },
+    { "id": 3001, "project_id": 103, "iid": 7, "title": "Tools child", "state": "opened", "labels": [], "assignees": [], "references": { "full": "example/core/tools#7" } },
+    { "id": 4001, "project_id": 104, "iid": 42, "title": "External blocker", "state": "opened", "labels": [], "assignees": [], "references": { "full": "other/context#42" } }
+  ],
+  "links": [
+    { "issue_link_id": 501, "source_id": 1001, "target_id": 2001, "link_type": "blocks" },
+    { "issue_link_id": 501, "source_id": 2001, "target_id": 1001, "link_type": "is_blocked_by" },
+    { "issue_link_id": 502, "source_id": 1002, "target_id": 2001, "link_type": "blocks" },
+    { "issue_link_id": 503, "source_id": 4001, "target_id": 1001, "link_type": "blocks" }
+  ],
+  "epics": [
+    { "id": "gid://gitlab/WorkItem/9001", "title": "Release", "children": ["gid://gitlab/WorkItem/9002", "gid://gitlab/Issue/1001", "gid://gitlab/Issue/3001"] },
+    { "id": "gid://gitlab/WorkItem/9002", "title": "Release", "children": ["gid://gitlab/Issue/2001", "gid://gitlab/Issue/1002", "gid://gitlab/Issue/4001"] }
+  ],
+  "unavailableEndpoints": [{ "project_id": 999, "iid": 42, "status": 403 }]
+}

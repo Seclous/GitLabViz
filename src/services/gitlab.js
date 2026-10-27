@@ -170,9 +170,8 @@ export const createGitLabGraphqlClient = (apiBaseUrl, token) => {
 }
 
 // REST bulk issue fetch (fast). Keeps the raw REST shape as much as possible.
-export const fetchProjectIssuesRest = async (client, projectId, onProgress, options = {}) => {
-  const encodedProjectId = encodeURIComponent(String(projectId || '').trim())
-  if (!encodedProjectId) return []
+const fetchIssuesRest = async (client, endpoint, onProgress, options = {}) => {
+  if (!endpoint) return []
 
   const state = options.state || 'opened' // opened | closed | all
   const updatedAfter = options?.params?.updated_after || null
@@ -200,7 +199,7 @@ export const fetchProjectIssuesRest = async (client, projectId, onProgress, opti
     try {
       resp = await gitlabGet(
         client,
-        `/projects/${encodedProjectId}/issues`,
+        endpoint,
         { params },
         { maxRetries: DEFAULT_MAX_RETRIES }
       )
@@ -226,15 +225,61 @@ export const fetchProjectIssuesRest = async (client, projectId, onProgress, opti
       all.push(i)
     })
 
-    const nextPage = String(resp?.headers?.['x-next-page'] || resp?.headers?.['X-Next-Page'] || '').trim()
-    if (!nextPage) break
-    page = Number(nextPage) || (page + 1)
+    const nextPage = resp?.headers?.['x-next-page'] ?? resp?.headers?.['X-Next-Page']
+    if (nextPage != null) {
+      if (!String(nextPage).trim()) break
+      page = Number(nextPage) || (page + 1)
+    } else {
+      if (items.length < PER_PAGE) break
+      page++
+    }
   }
 
   try {
     Object.defineProperty(all, '__glvPartial', { value: partial, enumerable: false })
   } catch {}
   return all
+}
+
+export const fetchProjectIssuesRest = (client, projectId, onProgress, options = {}) =>
+  fetchIssuesRest(client, '/projects/' + encodeURIComponent(String(projectId).trim()) + '/issues', onProgress, options)
+
+export const fetchGroupProjects = async (client, source) => {
+  const projects = {}
+  let page = 1
+  do {
+    const response = await gitlabGet(client, '/groups/' + encodeURIComponent(source.idOrPath) + '/projects', {
+      params: { per_page: PER_PAGE, page, include_subgroups: source.includeSubgroups, with_shared: source.includeShared }
+    }, { maxRetries: DEFAULT_MAX_RETRIES })
+    const items = Array.isArray(response.data) ? response.data : []
+    for (const project of items) projects[project.id] = project
+    const nextPage = response.headers?.['x-next-page'] ?? response.headers?.['X-Next-Page']
+    page = nextPage != null ? Number(nextPage) || 0 : (items.length === PER_PAGE ? page + 1 : 0)
+  } while (page)
+  return projects
+}
+
+export const fetchGroupIssuesRest = async (client, source, projects, onProgress, options = {}) => {
+  const issues = await fetchIssuesRest(client, '/groups/' + encodeURIComponent(source.idOrPath) + '/issues', onProgress, options)
+  const allowed = new Set(Object.keys(projects))
+  const result = issues.filter(issue => allowed.has(String(issue.project_id)))
+  // Verify opened coverage against project counters. Shared projects and queries
+  // without a comparable counter use per-project coverage checks.
+  const fallback = Object.values(projects).filter(project => {
+    if (source.includeShared || options.params?.updated_after || (options.state || 'opened') !== 'opened') return true
+    if (project.open_issues_count == null) return true
+    const count = result.filter(issue => issue.project_id === project.id && issue.state === 'opened').length
+    return Number(project.open_issues_count || 0) > count
+  })
+  let partial = !!issues.__glvPartial
+  for (const project of fallback) {
+    const extra = await fetchProjectIssuesRest(client, project.id, onProgress, options)
+    partial ||= !!extra.__glvPartial
+    result.push(...extra)
+  }
+  const unique = [...new Map(result.map(issue => [issue.id ?? issue.project_id + ':' + issue.iid, issue])).values()]
+  Object.defineProperty(unique, '__glvPartial', { value: partial, enumerable: false })
+  return unique
 }
 
 const ensureIssueCaps = async (client, fullPath) => {
@@ -1219,20 +1264,12 @@ export const fetchProjectIssues = async (client, projectId, onProgress, options 
   }
 };
 
-export const fetchIssueLinks = async (client, projectId, issueIid) => {
-   try {
-    const encodedProjectId = encodeURIComponent(projectId);
-    const response = await gitlabGet(
-      client,
-      `/projects/${encodedProjectId}/issues/${issueIid}/links`,
-      {},
-      { maxRetries: 1 }
-    )
-    return response.data;
-  } catch (error) {
-     console.warn(`Warning: Failed to fetch links for issue ${issueIid}: ${error?.message || String(error)}`);
-     return []; // Return empty array on error to allow partial loading
-  }
+export const fetchIssueLinks = async (client, projectId, issueIid, config = {}) => {
+  if (!projectId || issueIid == null) throw new Error('Issue links require project ID and IID')
+  const response = await gitlabGet(client,
+    '/projects/' + encodeURIComponent(projectId) + '/issues/' + issueIid + '/links',
+    config, { maxRetries: 2 })
+  return response.data
 }
 
 // Resource milestone events: chronological log of milestone add/remove on an issue.

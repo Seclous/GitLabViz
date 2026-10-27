@@ -227,7 +227,13 @@
             </v-col>
           </v-row>
 
-          <v-text-field
+          <v-select v-model="settings.config.gitlabSourceKind" label="Issue source" :items="[{title:'Project',value:'project'},{title:'Group',value:'group'}]" variant="outlined" :disabled="!settings.config.enableGitLab" class="mb-4" />
+          <template v-if="settings.config.gitlabSourceKind === 'group'">
+            <v-text-field v-model="settings.config.groupId" label="Source group ID / Path" hint="e.g. example-team/example-group" persistent-hint variant="outlined" :disabled="!settings.config.enableGitLab" class="mb-4" />
+            <v-switch v-model="settings.config.gitlabIncludeSubgroups" label="Include subgroups" color="primary" />
+            <v-switch v-model="settings.config.gitlabIncludeShared" label="Include shared projects" color="primary" />
+          </template>
+          <v-text-field v-else
             v-model="settings.config.projectId"
             label="Project ID / Path"
             variant="outlined"
@@ -306,6 +312,20 @@
               <v-icon icon="mdi-archive-check-outline" size="small" class="text-medium-emphasis" />
             </template>
           </v-select>
+
+          <v-expansion-panels class="mb-4">
+            <v-expansion-panel title="Group capability diagnostics">
+              <v-expansion-panel-text>
+                <p class="mb-3">Check read access before configuring group browsing. This does not change the current project. A missing endpoint can also mean the token cannot see it.</p>
+                <v-text-field v-model="capabilityGroupPath" label="Group ID / Path" variant="outlined" />
+                <v-btn :loading="capabilityLoading" :disabled="capabilityLoading || !capabilityGroupPath.trim() || !settings.config.gitlabApiBaseUrl" @click="testGroupCapabilities">Check group capabilities</v-btn>
+                <ul v-if="capabilityChecks.length" class="mt-3" aria-label="Group capability results">
+                  <li v-for="check in capabilityChecks" :key="check.name">{{ check.name }}: {{ check.status }}</li>
+                </ul>
+                <p v-if="capabilityChecks.length" class="mt-2 text-caption">Hierarchy schema availability does not guarantee access to individual work items. Unknown means the schema could not be confirmed.</p>
+              </v-expansion-panel-text>
+            </v-expansion-panel>
+          </v-expansion-panels>
 
           <v-alert
             v-if="gitlabTestResult"
@@ -1366,10 +1386,13 @@
 </template>
 
 <script setup>
+import { readGitLabSourceCache, writeGitLabSourceCache, validateGitLabSourceCache } from '../services/gitlabSourceCache'
+
 import { computed, onMounted, ref, toRaw, watch } from 'vue'
 import { cacheGetPath, cacheOpenFolder, svnCacheGetStats } from '../services/cache'
 import { mattermostLogin } from '../services/mattermost'
 import { createGitLabClient, describeGitLabRequestError, fetchTokenInfo, normalizeGitLabApiBaseUrl } from '../services/gitlab'
+import { probeGitLabCapabilities } from '../services/gitlabCapabilities'
 import { getTokenExpiry } from '../utils/tokenExpiry'
 import { useSettingsStore } from '../composables/useSettingsStore'
 import HotkeysSettings from './HotkeysSettings.vue'
@@ -1458,6 +1481,20 @@ const buildMode = import.meta.env.MODE || (isDev ? 'development' : 'production')
 
 const gitlabTestLoading = ref(false)
 const gitlabTestResult = ref(null) // { ok: boolean, message: string }
+const capabilityGroupPath = ref('')
+const capabilityLoading = ref(false)
+const capabilityChecks = ref([])
+
+async function testGroupCapabilities () {
+  capabilityLoading.value = true
+  capabilityChecks.value = []
+  try {
+    const client = createGitLabClient(resolveGitLabApiBaseUrl(), String(settings.config.token || '').trim())
+    capabilityChecks.value = await probeGitLabCapabilities(client, capabilityGroupPath.value)
+  } finally {
+    capabilityLoading.value = false
+  }
+}
 
 const resolveGitLabApiBaseUrl = () => {
   const direct = normalizeGitLabApiBaseUrl(settings.config.gitlabApiBaseUrl)
@@ -1518,12 +1555,13 @@ async function runGitLabTest ({ requireToken = false, requireProject = false } =
     }
 
     if (requireProject) {
-      const projectId = String(settings.config.projectId || '').trim()
-      if (!projectId) return { ok: false, type: 'warning', message: 'Please provide Project ID / Path first.' }
+      const groupMode = settings.config.gitlabSourceKind === 'group'
+      const projectId = String((groupMode ? settings.config.groupId : settings.config.projectId) || '').trim()
+      if (!projectId) return { ok: false, type: 'warning', message: 'Please provide the selected source ID / Path first.' }
       const encoded = encodeURIComponent(projectId)
-      const pr = await client.get(`/projects/${encoded}`)
+      const pr = await client.get(`/${groupMode ? 'groups' : 'projects'}/${encoded}`)
       const p = pr && pr.data ? pr.data : null
-      if (!p || (!p.id && !p.path_with_namespace)) throw new Error('Unexpected /projects response')
+      if (!p || (!p.id && !p.path_with_namespace && !p.full_path)) throw new Error('Unexpected /projects response')
     }
 
     if (token) {
@@ -2054,9 +2092,7 @@ const estimateJsonBytes = (v) => {
 }
 
 const refreshGitlabCacheDetails = async () => {
-  const meta = await localforage.getItem('gitlab_meta')
-  const nodes = await localforage.getItem('gitlab_nodes')
-  const edges = await localforage.getItem('gitlab_edges')
+  const { meta, nodes, edges } = await readGitLabSourceCache(settings.config) || {}
   gitlabCacheDetails.value = {
     bytes: estimateJsonBytes(meta) + estimateJsonBytes(nodes) + estimateJsonBytes(edges)
   }
@@ -2092,11 +2128,7 @@ const exportGitlabCache = async () => {
     type: 'gitlab-viz-cache',
     version: 2,
     exportedAt: Date.now(),
-    gitlab: {
-      meta: await localforage.getItem('gitlab_meta'),
-      nodes: await localforage.getItem('gitlab_nodes'),
-      edges: await localforage.getItem('gitlab_edges')
-    },
+    gitlab: await readGitLabSourceCache(settings.config),
     settings: {
       presets: settings.uiState && settings.uiState.presets ? { custom: settings.uiState.presets.custom || [] } : { custom: [] }
     }
@@ -2151,9 +2183,8 @@ const onRestoreFile = async (e) => {
     const payload = JSON.parse(text)
     const gitlab = payload && payload.gitlab ? payload.gitlab : null
     if (!gitlab || typeof gitlab !== 'object') throw new Error('Invalid backup file (missing gitlab)')
-    await localforage.setItem('gitlab_meta', gitlab.meta || null)
-    await localforage.setItem('gitlab_nodes', gitlab.nodes || null)
-    await localforage.setItem('gitlab_edges', gitlab.edges || null)
+    if (!validateGitLabSourceCache(settings.config, gitlab)) throw new Error('Backup is outdated, invalid, or belongs to a different source. Select its source or refresh to rebuild the index.')
+    await writeGitLabSourceCache(settings.config, gitlab)
 
     // Restore custom presets (optional; backward compatible with older backups)
     const presets = payload && payload.settings && payload.settings.presets ? payload.settings.presets : null

@@ -127,7 +127,7 @@
       <template #item.iid="{ item }">
         <span class="il-iid-cell">
           <span class="il-row-color" :style="{ background: item._color }" />
-          <span class="text-medium-emphasis font-weight-medium">#{{ item.iid }}</span>
+          <span class="text-medium-emphasis font-weight-medium">{{ item.reference }}</span>
         </span>
       </template>
 
@@ -467,7 +467,12 @@ const headers = computed(() => {
     .map(k => {
       const def = defByKey[k]
       if (!def) return null
-      const w = widths.value[k] || def.width
+      const referenceWidth = k === 'iid'
+        ? Object.values(props.nodes || {}).reduce((width, node) => node.inSelectedGroup
+          ? Math.max(width, Math.min(480, String(node.fullReference || '').length * 7 + 32))
+          : width, def.width)
+        : def.width
+      const w = widths.value[k] || referenceWidth
       return { ...def, width: w, headerProps: { 'data-col-key': k }, cellProps: { 'data-col-key': k } }
     })
     .filter(Boolean)
@@ -1023,7 +1028,8 @@ const items = computed(() => {
     const item = {
       id,
       iid: raw.iid != null ? String(raw.iid) : id,
-      title: raw.title || n.name || '',
+      reference: (n.inSelectedGroup || n.externalContext) ? (n.fullReference || raw.references?.full || `${n.projectPath}#${raw.iid}`) : `#${raw.iid ?? id}`,
+      title: (n.externalContext ? 'External context · ' : '') + (raw.title || n.name || ''),
       url: raw.web_url || '',
       state: raw.state || 'opened',
       status: currentStatusOfRaw(raw) || '',

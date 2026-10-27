@@ -26,7 +26,10 @@ npm ci
 npm run build
 ```
 
-The output will be in the `dist/` directory.
+Edit `app.html` for the HTML entry and `src/` for application code. The build
+creates the standalone `dist/index.html` and copies it to the root `index.html`.
+The root file is a generated deliverable; do not edit its bundled code directly.
+The development server serves `app.html` at `/`.
 
 ### CI / Deployment
 

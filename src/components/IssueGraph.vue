@@ -2389,7 +2389,7 @@ function render() {
         ctx.textAlign = 'left'
         
         // Check for JIRA ID in title
-        let displayId = `#${node.id}`
+        let displayId = node.inSelectedGroup ? node.fullReference : `#${node._raw?.iid ?? node.iid ?? node.id}`
         let displayTitle = node._raw.title || node.name || 'Untitled'
         let jiraId = null
         const titleText = node._raw.title || ''
